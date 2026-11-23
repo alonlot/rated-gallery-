@@ -252,3 +252,55 @@ def test_hash_index_takes_capture_time_of_merged_copy(tmp_path):
     assert h.ts == [1678460400.0]
     h.fill_ts(1, 1680778800.0)            # an existing time is not replaced
     assert h.ts == [1678460400.0]
+
+
+def test_runner_front_and_others_waiting():
+    """Training after new ratings must not wait behind phone-sync scans (they can run for an hour)."""
+    from ratedgallery.tasks import Runner
+
+    r = Runner()
+    assert r.request("scan", list_sources=False)
+    assert not r.others_waiting("scan")
+    r.request("search_index")
+    assert r.request("train", front=True)
+    assert [q[0] for q in r.queue] == ["train", "scan", "search_index"]
+    assert r.others_waiting("scan") and r.pending("train") and not r.pending("export")
+    assert not r.request("search_index", front=True)          # already queued: moved to the front, not added again
+    assert [q[0] for q in r.queue] == ["search_index", "train", "scan"]
+    assert not r.request("scan", list_sources=False)          # merged with the queued scan
+    assert len(r.queue) == 3
+
+
+def test_scan_pauses_for_a_waiting_task(tmp_path, monkeypatch):
+    """While files keep arriving, the scan loop stops after a round when another task waits, and queues itself again."""
+    from ratedgallery import config, db, people, pipeline
+    from ratedgallery.tasks import Progress, Runner
+
+    runner = Runner()                     # not started, so nothing takes the queued tasks during the test
+    monkeypatch.setattr(pipeline, "runner", runner)
+    db.set_path(tmp_path / "t.db")
+    config.reset_settings_for_tests(tmp_path / "settings.json")
+    rounds = []
+
+    class FakePool:
+        def __init__(self, *a, **k): pass
+        def close(self): pass
+
+    monkeypatch.setattr("ratedgallery.workers.Pool", FakePool)
+    monkeypatch.setattr("ratedgallery.models.SCRFD", lambda: None)
+    monkeypatch.setattr("ratedgallery.models.ArcFace", lambda: None)
+    monkeypatch.setattr(pipeline, "count_pass1", lambda: 5)                  # the phone keeps uploading
+    monkeypatch.setattr(pipeline, "pending_pass1", lambda limit=0: [{"id": len(rounds)}])
+    def one_round(*a, **k):
+        rounds.append(1)
+        if len(rounds) == 2:
+            runner.request("train", front=True)                              # a rating arrives during the scan
+    monkeypatch.setattr(pipeline, "run_pass1", one_round)
+    monkeypatch.setattr(people, "me_id", lambda: None)
+    for name in ("cleanup_spool", "infer_facing", "backfill_beauty"):
+        monkeypatch.setattr(pipeline, name, lambda *a, **k: None)
+    monkeypatch.setattr("ratedgallery.ranking.score_all", lambda *a, **k: 0)
+    monkeypatch.setattr("ratedgallery.search.index_job", lambda *a, **k: 0)
+    pipeline.scan_job(Progress("scan"), list_sources=False)
+    assert len(rounds) == 2
+    assert [(q[0], q[1]) for q in runner.queue] == [("train", {}), ("scan", {"list_sources": False})]

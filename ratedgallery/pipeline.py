@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 from . import config, db, geo, imaging, metadata, people
-from .tasks import Progress
+from .tasks import Progress, runner
 
 log = logging.getLogger("ratedgallery.pipeline")
 ROUND = 400  # files per round; keeps the phone spool small
@@ -630,6 +630,12 @@ def scan_job(prog: Progress, list_sources: bool = True):
                     run_pass2(pool, prog, CLIP(), IQA())
                     prog.set_phase("Scanning photos", prog.done + count_pass1())
                 cleanup_spool()
+                if runner.others_waiting("scan"):
+                    # While the phone uploads, this loop could run for an hour. Another task waits (for example
+                    # training after new ratings): finish this round, let it run, then the scan goes on.
+                    log.info("Scan pauses for a waiting task; it goes on after it")
+                    runner.request("scan", list_sources=False)
+                    break
         if people.me_id() is not None and pending_pass2():
             if pool is None:
                 pool = ACTIVE_POOL = Pool()

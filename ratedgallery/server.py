@@ -63,7 +63,7 @@ def _startup():
     runner.start()
     db.conn()
     if ranking.label_counts()[0] >= 8 and ranking.current_model()[1] is None:
-        runner.request("train")  # the saved model has an old feature layout: train again with the same ratings
+        runner.request("train", front=True)  # no model, or an old feature layout: train again with the same ratings
     if search.ready() and db.val("SELECT COUNT(*) FROM photos p LEFT JOIN photo_vec v ON v.photo_id=p.id "
                                  "WHERE v.photo_id IS NULL", default=0):
         runner.request("search_index")  # photos from before search existed
@@ -547,7 +547,7 @@ def _action(kind, row_id):
 
 def _maybe_retrain():
     if ranking.labels_since_model() >= int(config.settings()["retrain_every"]):
-        runner.request("train")
+        runner.request("train", front=True)
 
 
 @app.post("/api/calib/rate")
