@@ -399,8 +399,10 @@ export function createGallery(root, provider) {
         h('div', { class: 'tripinfo' }, h('div', { class: 'triptitle' }, t.title), h('div', { class: 'muted small' }, t.when + (t.kind === 'trip' ? ` · ${t.days} ${t.days === 1 ? 'day' : 'days'}` : '')),
           h('div', { class: 'small' }, `${ids.length} photos · ${me.length} of me`, best !== null && best >= 0 ? h('span', { class: `badge inline ${scoreClass(best)}` }, `best ${best.toFixed(1)}`) : null)));
     };
+    const shownCount = {};
     const section = (title, items, note) => {
       const cards = items.map(card).filter(Boolean);
+      shownCount[title] = cards.length;
       tripsBox.append(h('h2', {}, title, h('span', { class: 'muted small' }, ` ${cards.length}`)));
       if (!cards.length) tripsBox.append(h('p', { class: 'muted' }, note));
       else tripsBox.append(h('div', { class: 'tripgrid' }, ...cards));
@@ -408,7 +410,9 @@ export function createGallery(root, provider) {
     tripsBox.append(h('p', { class: 'muted small' }, home ? `Home: ${home.city}. A trip is photos more than 80 km from home.` : 'Trips need photos with a location. Events still work.'));
     section('Trips', trips, home ? 'No trips found with these filters.' : 'No home location yet.');
     section('Events', events, 'No events found (an event is 6 or more photos taken within a few hours).');
-    info.textContent = `${trips.length} trips and ${events.length} events`;
+    const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    info.textContent = `${plural(shownCount.Trips, 'trip')} and ${plural(shownCount.Events, 'event')}` +
+      (shownCount.Trips < trips.length || shownCount.Events < events.length ? ' with these filters' : '');
   }
 
   // ------------------------------------------------------------ map

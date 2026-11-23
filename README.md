@@ -61,7 +61,12 @@ photos on the PC. Give the PC a fixed IP address in your router. If the IP addre
    Search also works offline in the phone app (the phone downloads the 137 MB text model from the PC one time).
    Limits: counting ("3 people"), negation ("no people"), names and text inside photos do not work well.
    Hebrew results are a little weaker than English results. Use filters for people, dates and places.
-5. **Gallery**: filters (score, confidence, people, date, time of day, place, radius, camera, front/rear camera,
+5. **Gallery (PC and phone)**: quick chips at the top: Photos / Trips / Map, **Best of bursts** (one photo per burst,
+   tap "+N" to see the others), **Per period** (compare each photo only with photos from about the same years, because
+   your look changes over time), With me / Everyone, Selfies, 8+, Me alone. **Trips**: the app finds your home (the city with
+   the most photos); a trip is photos more than 80 km from home with gaps of 2 days or less. **Events**: 6 or more photos
+   taken within a few hours. On the phone you can also rate photos offline; the ratings go to the PC at the next sync.
+6. **Filters**: filters (score, confidence, people, date, time of day, place, radius, camera, front/rear camera,
    number of people). Tap a photo for the score breakdown and all metadata. **Select** copies originals to a folder.
 
 ## What the app does with your files
