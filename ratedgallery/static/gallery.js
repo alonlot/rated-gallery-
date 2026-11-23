@@ -1,7 +1,9 @@
-// Gallery with filters, detail view, map and export. Works with two data providers:
+// Gallery: search, quick chips, filters sheet, grid (bursts collapsed, month headers), trips and events, map,
+// detail view with rating. Works with two data providers:
 //  - pcProvider(): the PC server (/api/index ...)
-//  - phoneProvider(): the Android app bridge (window.RGBridge), offline, read only.
-import { h, api, toast, scoreClass, zoomable, onSwipe, isTouch } from './util.js';
+//  - phoneProvider(): the Android app bridge (window.RGBridge), offline. Ratings wait in a queue on the phone.
+import { h, api, toast, scoreClass, zoomable, onSwipe } from './util.js';
+import { collapseBursts, findTrips, monthLabel, km } from './groups.js';
 
 const PAGE = 120;
 const LOW_CONF = 0.4;
@@ -16,7 +18,8 @@ export function pcProvider(settings = {}) {
     viewUrl: p => `/api/photo/${p.id}/view`,
     details: p => api(`/api/photo/${p.id}`),
     canRate: true,
-    rate: (faceId, rating) => api('/api/calib/rate', { method: 'POST', body: { face_id: faceId, rating, source: 'gallery' } }),
+    rate: (p, det, rating) => api('/api/calib/rate', { method: 'POST', body: { face_id: det.me_face, rating, source: 'gallery' } }),
+    pending: () => ({}),
     canExport: true,
     exportTo: (ids, folder) => api('/api/export', { method: 'POST', body: { photo_ids: ids, folder } }),
     download: p => { location.href = `/api/photo/${p.id}/original`; },
@@ -33,59 +36,63 @@ export function phoneProvider() {
   const key = 'rg_map_enabled';
   let mapOn = false;
   try { mapOn = localStorage.getItem(key) === '1'; } catch (e) { /* storage may be blocked */ }
+  const parse = (s, d) => { try { return JSON.parse(s); } catch (e) { return d; } };
   return {
     kind: 'phone',
     mapEnabled: mapOn,
     setMap(v) { try { localStorage.setItem(key, v ? '1' : '0'); } catch (e) { /* ignore */ } },
-    loadIndex: async () => JSON.parse(B.getIndex() || '{"photos":[],"persons":[]}'),
+    loadIndex: async () => parse(B.getIndex(), { photos: [], persons: [] }),
     thumbUrl: p => `/media/thumb/${encodeURIComponent(p.mid)}`,
     viewUrl: p => `/media/full/${encodeURIComponent(p.mid)}`,
-    details: async p => ({ breakdown: p.bd || [], meta: p.meta || {}, score: p.s, conf: p.c, prior: p.prior,
+    details: async p => ({ breakdown: p.bd || [], meta: p.meta || {}, score: p.s, score_p: p.sp, conf: p.c, prior: p.prior,
       rating: p.r, me_face: null, faces: p.fb ? [{ x1: p.fb[0], y1: p.fb[1], x2: p.fb[2], y2: p.fb[3], name: 'Me', me: true }] : [] }),
-    canRate: false,
+    canRate: !!(B && B.rate),
+    rate: async (p, det, rating) => {
+      const r = parse(B.rate(p.id, rating), { ok: false, reason: 'error' });
+      if (!r.ok) throw new Error(r.reason || 'Rating was not saved');
+      return r;
+    },
+    pending: () => (B && B.getPendingRatings ? parse(B.getPendingRatings(), {}) : {}),
     canExport: false,
     download: p => B.share(p.mid),
     downloadLabel: 'Share',
     search: async q => {
       if (!B.search) return { ok: false, reason: 'Update the phone app to use search.' };
-      // The bridge call blocks while the model loads the first time: let "Searching…" show first.
-      await new Promise(r => setTimeout(r, 50));
-      try { return JSON.parse(B.search(q)); } catch (e) { return { ok: false, reason: String(e) }; }
+      await new Promise(r => setTimeout(r, 50));  // the first call blocks while the model loads: show "Searching…" first
+      return parse(B.search(q), { ok: false, reason: 'Search failed' });
     },
-    status: () => { try { return JSON.parse(B.getStatus()); } catch (e) { return {}; } },
+    status: () => parse(B.getStatus(), {}),
     sync: () => B.syncNow(),
     openPC: () => B.openPC(),
   };
 }
 
 const DEFAULT_F = {
-  minScore: 0, hideLowConf: false, sort: 'score', includeNoMe: false,
+  minScore: 0, hideLowConf: false, sort: 'score', includeNoMe: false, bursts: true, scoreMode: 'all',
   peopleMode: 'any', people: [], match: 'all',
   dateFrom: '', dateTo: '', year: '', month: '', tod: '', noDate: 'any',
   country: '', city: '', rLat: '', rLon: '', rKm: '', noLoc: 'any',
   camera: '', facing: '', npMin: '', npMax: '', src: '',
 };
+const VIEW_KEYS = ['sort', 'bursts', 'scoreMode'];  // display options, not counted as filters
 
 function loadFilters() {
   try { return { ...DEFAULT_F, ...JSON.parse(localStorage.getItem('rg_filters') || '{}') }; } catch (e) { return { ...DEFAULT_F }; }
 }
 function saveFilters(f) { try { localStorage.setItem('rg_filters', JSON.stringify(f)); } catch (e) { /* ignore */ } }
 
-function km(lat1, lon1, lat2, lon2) {
-  const p = Math.PI / 180;
-  const a = Math.sin((lat2 - lat1) * p / 2) ** 2 + Math.cos(lat1 * p) * Math.cos(lat2 * p) * Math.sin((lon2 - lon1) * p / 2) ** 2;
-  return 12742 * Math.asin(Math.sqrt(Math.min(1, a)));
-}
+export const scoreKey = f => (f.scoreMode === 'period' ? 'sp' : 's');
 
 // Pure filter function, exported for tests.
 export function applyFilters(photos, f, meId) {
+  const sk = scoreKey(f);
   const sel = (f.people || []).map(Number);
   const rLat = parseFloat(f.rLat), rLon = parseFloat(f.rLon), rKm = parseFloat(f.rKm);
   const useR = !isNaN(rLat) && !isNaN(rLon) && rKm > 0;
-  const npMin = f.npMin === '' ? null : +f.npMin, npMax = f.npMax === '' ? null : +f.npMax;
+  const npMin = f.npMin === '' || f.npMin === undefined ? null : +f.npMin, npMax = f.npMax === '' || f.npMax === undefined ? null : +f.npMax;
   const out = photos.filter(p => {
     if (!f.includeNoMe && !p.me) return false;
-    if (f.minScore > 0 && (p.s === null || p.s === undefined || p.s < f.minScore)) return false;
+    if (f.minScore > 0 && (p[sk] === null || p[sk] === undefined || p[sk] < f.minScore)) return false;
     if (f.hideLowConf && p.me && (p.c === null || p.c < LOW_CONF)) return false;
     const pp = p.p || [];
     if (f.peopleMode === 'alone') { if (!p.me || (p.np || 0) > 1 || pp.some(x => x !== meId)) return false; }
@@ -122,46 +129,60 @@ export function applyFilters(photos, f, meId) {
     return true;
   });
   const sNull = v => (v === null || v === undefined ? -1 : v);
-  if (f.sort === 'score') out.sort((a, b) => sNull(b.s) - sNull(a.s) || (b.t || '').localeCompare(a.t || ''));
+  if (f.sort === 'score') out.sort((a, b) => sNull(b[sk]) - sNull(a[sk]) || (b.t || '').localeCompare(a.t || ''));
   else if (f.sort === 'date') out.sort((a, b) => (b.t || '').localeCompare(a.t || ''));
   else if (f.sort === 'date_asc') out.sort((a, b) => (a.t || '9').localeCompare(b.t || '9'));
   return out;
 }
 
+const fmt = v => (v === null || v === undefined ? '–' : v.toFixed(1));
+
 export function createGallery(root, provider) {
   let index = { photos: [], persons: [] };
+  let byId = new Map();
   let f = loadFilters();
-  let list = [];
-  let shown = 0;
+  let list = [], others = new Map(), shown = 0, lastMonth = null;
+  let mode = 'photos';
+  let group = null;                 // a selected trip or event: { title, ids: Set }
+  const expanded = new Set();       // burst ids opened in the grid
   let selecting = false;
   const selected = new Set();
-  let mode = 'grid';
-  let map = null, mapLayer = null;
-  let observer = null;
-  let searchRes = null;   // Map photo id -> similarity, while a search is active
-  let searchQ = '';
+  let searchRes = null, searchQ = '';
+  let pending = {};
+  let tripsCache = null;
+  let map = null, mapLayer = null, observer = null;
   const meId = () => (index.persons.find(p => p.me) || {}).id;
+  const sk = () => scoreKey(f);
 
   root.innerHTML = '';
-  const searchInput = h('input', { type: 'search', dir: 'auto', enterkeyhint: 'search', class: 'grow',
-    placeholder: 'Search photos (any language): river, sunset…', 'aria-label': 'Search photos' });
+  root.classList.add('gallery');
+  const searchInput = h('input', { type: 'search', dir: 'auto', enterkeyhint: 'search', placeholder: 'Search photos (any language)', 'aria-label': 'Search photos' });
+  const filterBtn = h('button', { class: 'filterbtn', onclick: () => openSheet() }, 'Filters');
+  const chipRow = h('div', { class: 'chiprow' });
+  const appbar = h('div', { class: 'appbar' }, h('div', { class: 'searchrow' }, h('div', { class: 'searchbox' }, h('span', { class: 'sicon', 'aria-hidden': 'true' }, '⌕'), searchInput), filterBtn), chipRow);
+  const groupBar = h('div', { class: 'groupbar', style: { display: 'none' } });
+  const info = h('div', { class: 'info' });
+  const grid = h('div', { class: 'grid' });
+  const sentinel = h('div', { style: { height: '1px' } });
+  const tripsBox = h('div', { class: 'trips', style: { display: 'none' } });
+  const mapBox = h('div', { id: 'map', style: { display: 'none' } });
+  root.append(appbar, groupBar, info, grid, sentinel, tripsBox, mapBox);
+
   let searchTimer = null;
   searchInput.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(searchInput.value), 500); });
   searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(searchTimer); runSearch(searchInput.value); searchInput.blur(); } });
-  const searchBar = h('div', { class: 'row searchbar' }, searchInput,
-    h('button', { onclick: () => { searchInput.value = ''; runSearch(''); } }, 'Clear'));
-  root.append(searchBar);
-  const top = h('div', { class: 'gal-top' });
-  const filtersBox = h('details', { class: 'filters' });
-  const info = h('div', { class: 'muted small', style: { margin: '4px 0 8px' } });
-  const grid = h('div', { class: 'grid' });
-  const sentinel = h('div', { style: { height: '1px' } });
-  const mapBox = h('div', { id: 'map', style: { display: 'none' } });
-  root.append(top, filtersBox, info, grid, sentinel, mapBox);
 
   async function reload() {
     try { index = await provider.loadIndex(); } catch (e) { info.textContent = 'Could not load photos: ' + e.message; return; }
-    buildTop(); buildFilters(); refresh();
+    byId = new Map(index.photos.map(p => [p.id, p]));
+    tripsCache = null;
+    applyPending();
+    buildChips(); refresh();
+  }
+
+  function applyPending() {
+    pending = provider.pending() || {};
+    for (const [id, v] of Object.entries(pending)) { const p = byId.get(+id); if (p) { p.r = v.rating; p.rPending = true; } }
   }
 
   function setF(k, v) { f[k] = v; saveFilters(f); refresh(); }
@@ -172,177 +193,252 @@ export function createGallery(root, provider) {
     if (!q) { searchRes = null; refresh(); return; }
     info.textContent = 'Searching…';
     const r = await provider.search(q);
-    if (q !== searchQ) return;  // a newer search started
+    if (q !== searchQ) return;
     if (!r.ok) { searchRes = null; refresh(); toast(r.reason || 'Search is not available'); return; }
     searchRes = new Map(r.results.map(([id, sim]) => [id, sim]));
-    refresh();
+    if (mode === 'trips') mode = 'photos';
+    buildChips(); refresh();
     if (r.notIndexed) info.textContent += ` · ${r.notIndexed} new photos are not searchable yet`;
   }
 
-  function buildTop() {
-    top.innerHTML = '';
-    const sortSel = h('select', { onchange: e => setF('sort', e.target.value), 'aria-label': 'Sort' },
-      h('option', { value: 'score' }, 'Best score first'), h('option', { value: 'date' }, 'Newest first'), h('option', { value: 'date_asc' }, 'Oldest first'));
-    sortSel.value = f.sort;
-    top.append(sortSel);
-    const views = h('div', { class: 'chips' },
-      h('span', { class: 'chip' + (mode === 'grid' ? ' on' : ''), onclick: () => { mode = 'grid'; buildTop(); refresh(); } }, 'Grid'));
-    if (provider.mapEnabled) views.append(h('span', { class: 'chip' + (mode === 'map' ? ' on' : ''), onclick: () => { mode = 'map'; buildTop(); refresh(); } }, 'Map'));
-    top.append(views);
+  // ------------------------------------------------------------ top bar
+  const chip = (label, on, onclick, title) => h('button', { class: 'chip' + (on ? ' on' : ''), onclick, title, 'aria-pressed': on ? 'true' : 'false' }, label);
+
+  function buildChips() {
+    chipRow.innerHTML = '';
+    const seg = h('div', { class: 'seg' },
+      ...[['photos', 'Photos'], ['trips', 'Trips'], ...(provider.mapEnabled ? [['map', 'Map']] : [])].map(([m, l]) =>
+        h('button', { class: mode === m ? 'on' : '', onclick: () => { mode = m; buildChips(); refresh(); } }, l)));
+    chipRow.append(seg);
+    const sort = h('select', { class: 'chipselect', 'aria-label': 'Sort', onchange: e => setF('sort', e.target.value) },
+      h('option', { value: 'score' }, 'Best first'), h('option', { value: 'date' }, 'Newest'), h('option', { value: 'date_asc' }, 'Oldest'));
+    sort.value = f.sort;
+    if (!searchRes && mode === 'photos') chipRow.append(sort);
+    chipRow.append(
+      chip('Best of bursts', f.bursts, () => { setF('bursts', !f.bursts); buildChips(); }, 'Show only the best photo of each burst'),
+      chip('Per period', f.scoreMode === 'period', () => { setF('scoreMode', f.scoreMode === 'period' ? 'all' : 'period'); buildChips(); }, 'Compare each photo only with photos from the same years'),
+      chip(f.includeNoMe ? 'Everyone' : 'With me', f.includeNoMe, () => { setF('includeNoMe', !f.includeNoMe); buildChips(); }, 'Photos with me, or all photos'),
+      chip('Selfies', f.facing === 'front', () => { setF('facing', f.facing === 'front' ? '' : 'front'); buildChips(); }),
+      chip('8+', f.minScore >= 8, () => { setF('minScore', f.minScore >= 8 ? 0 : 8); buildChips(); }),
+      chip('Me alone', f.peopleMode === 'alone', () => { setF('peopleMode', f.peopleMode === 'alone' ? 'any' : 'alone'); buildChips(); }));
     if (provider.canExport) {
-      top.append(h('button', { onclick: () => { selecting = !selecting; if (!selecting) selected.clear(); buildTop(); renderGrid(true); } }, selecting ? 'Cancel selection' : 'Select'));
+      chipRow.append(chip(selecting ? 'Cancel select' : 'Select', selecting, () => { selecting = !selecting; if (!selecting) selected.clear(); buildChips(); renderGrid(true); }));
       if (selecting) {
-        top.append(h('button', { onclick: () => { list.forEach(p => selected.add(p.id)); buildTop(); renderGrid(true); } }, `Select all ${list.length}`));
-        top.append(h('button', { class: 'primary', disabled: !selected.size, onclick: doExport }, `Copy ${selected.size} to folder`));
+        chipRow.append(chip(`All ${list.length}`, false, () => { list.forEach(p => selected.add(p.id)); buildChips(); renderGrid(true); }),
+          h('button', { class: 'chip primary', disabled: !selected.size, onclick: doExport }, `Copy ${selected.size}`));
       }
     }
     if (provider.kind === 'phone') {
-      const st = provider.status();
-      top.append(h('span', { class: 'muted small' }, st.connected ? 'PC connected' : 'Offline (last ratings)'));
-      top.append(h('button', { onclick: () => { provider.sync(); toast('Sync started'); } }, 'Sync'));
-      top.append(h('button', { onclick: () => { provider.setMap(!provider.mapEnabled); provider.mapEnabled = !provider.mapEnabled; buildTop(); } }, provider.mapEnabled ? 'Map off' : 'Map on (needs internet)'));
+      const st = provider.status() || {};
+      chipRow.append(chip(st.connected ? '● PC connected' : '○ Offline', false, () => { provider.sync(); toast('Sync started'); }, 'Tap to sync'),
+        chip(provider.mapEnabled ? 'Map off' : 'Map on', false, () => { provider.mapEnabled = !provider.mapEnabled; provider.setMap(provider.mapEnabled); if (!provider.mapEnabled && mode === 'map') mode = 'photos'; buildChips(); refresh(); }));
     }
+    const n = activeCount();
+    filterBtn.textContent = n ? `Filters · ${n}` : 'Filters';
+    filterBtn.classList.toggle('on', n > 0);
   }
 
   async function doExport() {
     const folder = prompt('Copy the selected originals to this folder on the PC (for example D:\\Best photos):');
     if (!folder) return;
-    try { await provider.exportTo([...selected], folder); toast('Copying started. See Library for progress.'); selecting = false; selected.clear(); buildTop(); renderGrid(true); }
+    try { await provider.exportTo([...selected], folder); toast('Copying started. See Library for progress.'); selecting = false; selected.clear(); buildChips(); renderGrid(true); }
     catch (e) { toast(e.message); }
   }
 
+  function activeCount() {
+    return Object.keys(DEFAULT_F).filter(k => !VIEW_KEYS.includes(k) && JSON.stringify(f[k]) !== JSON.stringify(DEFAULT_F[k])).length;
+  }
+
+  // ------------------------------------------------------------ filters sheet
   function opt(v, label, cur) { const o = h('option', { value: v }, label); if (String(cur) === String(v)) o.selected = true; return o; }
 
-  function buildFilters() {
-    const P = index.photos;
-    const cnt = (key) => { const m = new Map(); for (const p of P) { if (p[key]) m.set(p[key], (m.get(p[key]) || 0) + 1); } return [...m.entries()].sort((a, b) => b[1] - a[1]); };
-    const countries = new Map(); for (const p of P) if (p.cc) countries.set(p.cc, p.country || p.cc);
-    const cities = cnt('city').filter(([c]) => !f.country || P.some(p => p.city === c && p.cc === f.country));
-    const years = [...new Set(P.filter(p => p.t).map(p => p.t.slice(0, 4)))].sort().reverse();
-    const others = index.persons.filter(p => !p.me);
-    filtersBox.innerHTML = '';
-    filtersBox.append(h('summary', {}, 'Filters', h('span', { class: 'muted small', style: { marginLeft: '8px' } }, activeCount() ? `(${activeCount()} on)` : '')));
-    const g = h('div', { class: 'fgrid' });
-    const field = (label, ...el) => h('div', {}, h('label', {}, label), ...el);
-    const sel = (key, options) => { const s = h('select', { onchange: e => setF(key, e.target.value) }, ...options); s.value = f[key]; return s; };
-
-    const minS = h('input', { type: 'range', min: 0, max: 10, step: 0.5, value: f.minScore, oninput: e => { f.minScore = +e.target.value; minLbl.textContent = f.minScore || 'any'; }, onchange: e => setF('minScore', +e.target.value) });
-    const minLbl = h('b', {}, f.minScore || 'any');
-    g.append(field('Minimum score: ', minLbl, minS));
-    g.append(field('Confidence', h('div', { class: 'chips' }, h('span', { class: 'chip' + (f.hideLowConf ? ' on' : ''), onclick: () => { setF('hideLowConf', !f.hideLowConf); buildFilters(); } }, 'Hide low-confidence scores'))));
-    g.append(field('Photos', h('div', { class: 'chips' },
-      h('span', { class: 'chip' + (!f.includeNoMe ? ' on' : ''), onclick: () => { setF('includeNoMe', false); buildFilters(); } }, 'With me'),
-      h('span', { class: 'chip' + (f.includeNoMe ? ' on' : ''), onclick: () => { setF('includeNoMe', true); buildFilters(); } }, 'All photos'))));
-
-    const pm = h('div', { class: 'chips' },
-      ...[['any', 'Anyone'], ['alone', 'Me alone'], ['with', 'With people']].map(([v, l]) =>
-        h('span', { class: 'chip' + (f.peopleMode === v ? ' on' : ''), onclick: () => { setF('peopleMode', v); buildFilters(); } }, l)));
-    const peopleBox = h('div', {}, pm);
-    if (f.peopleMode === 'with') {
-      if (!others.length) peopleBox.append(h('div', { class: 'muted small' }, 'Name people on the PC (Me & People) to use this filter.'));
-      peopleBox.append(h('div', { class: 'chips', style: { marginTop: '6px' } }, ...others.map(p =>
-        h('span', { class: 'chip' + (f.people.includes(p.id) ? ' on' : ''), onclick: () => { const s = new Set(f.people); s.has(p.id) ? s.delete(p.id) : s.add(p.id); setF('people', [...s]); buildFilters(); } }, p.name))));
-      peopleBox.append(h('div', { class: 'chips', style: { marginTop: '6px' } }, ...[['all', 'All of them'], ['any', 'Any of them'], ['only', 'Only me and them']].map(([v, l]) =>
-        h('span', { class: 'chip' + (f.match === v ? ' on' : ''), onclick: () => { setF('match', v); buildFilters(); } }, l))));
+  function openSheet() {
+    const backdrop = h('div', { class: 'sheet-backdrop', onclick: () => close() });
+    const body = h('div', { class: 'sheet-body' });
+    const showBtn = h('button', { class: 'primary grow', onclick: () => close() });
+    const sheet = h('div', { class: 'sheet', role: 'dialog', 'aria-label': 'Filters' },
+      h('div', { class: 'sheet-head' }, h('b', { class: 'grow' }, 'Filters'), h('button', { onclick: () => close(), 'aria-label': 'Close' }, '✕')),
+      body, h('div', { class: 'sheet-foot' }, h('button', { onclick: () => { const keep = VIEW_KEYS.map(k => [k, f[k]]); f = { ...DEFAULT_F, ...Object.fromEntries(keep) }; saveFilters(f); draw(); refresh(); } }, 'Clear all'), showBtn));
+    document.body.append(backdrop, sheet);
+    function close() { backdrop.remove(); sheet.remove(); buildChips(); }
+    const upd = () => { showBtn.textContent = `Show ${list.length} ${list.length === 1 ? 'photo' : 'photos'}`; };
+    const set = (k, v) => { setF(k, v); draw(); };
+    function draw() {
+      const P = index.photos;
+      const cnt = key => { const m = new Map(); for (const p of P) if (p[key]) m.set(p[key], (m.get(p[key]) || 0) + 1); return [...m.entries()].sort((a, b) => b[1] - a[1]); };
+      const countries = new Map(); for (const p of P) if (p.cc) countries.set(p.cc, p.country || p.cc);
+      const cities = cnt('city').filter(([c]) => !f.country || P.some(p => p.city === c && p.cc === f.country));
+      const years = [...new Set(P.filter(p => p.t).map(p => p.t.slice(0, 4)))].sort().reverse();
+      const people = index.persons.filter(p => !p.me);
+      const sel = (key, options) => { const s = h('select', { onchange: e => set(key, e.target.value) }, ...options); s.value = f[key]; return s; };
+      const sec = (title, ...kids) => h('section', {}, h('h3', {}, title), ...kids);
+      const chips = (pairs, key) => h('div', { class: 'chips' }, ...pairs.map(([v, l]) => chip(l, f[key] === v, () => set(key, v))));
+      body.innerHTML = '';
+      const minLbl = h('b', {}, f.minScore || 'any');
+      body.append(sec('Score',
+        h('div', { class: 'row' }, h('span', { class: 'grow' }, 'Minimum score: ', minLbl)),
+        h('input', { type: 'range', min: 0, max: 10, step: 0.5, value: f.minScore, oninput: e => { minLbl.textContent = +e.target.value || 'any'; }, onchange: e => set('minScore', +e.target.value) }),
+        h('div', { class: 'chips' }, chip('Hide low-confidence scores', f.hideLowConf, () => set('hideLowConf', !f.hideLowConf)))));
+      const pbox = h('div', {}, chips([['any', 'Anyone'], ['alone', 'Me alone'], ['with', 'With people']], 'peopleMode'));
+      if (f.peopleMode === 'with') {
+        if (!people.length) pbox.append(h('p', { class: 'muted small' }, 'Name people on the PC (Me & People) to use this filter.'));
+        pbox.append(h('div', { class: 'chips' }, ...people.map(p => chip(p.name, f.people.includes(p.id), () => { const s = new Set(f.people); s.has(p.id) ? s.delete(p.id) : s.add(p.id); set('people', [...s]); }))),
+          chips([['all', 'All of them'], ['any', 'Any of them'], ['only', 'Only me and them']], 'match'));
+      }
+      body.append(sec('People', pbox, h('div', { class: 'row' }, h('span', { class: 'grow muted small' }, 'Number of people'),
+        h('input', { type: 'number', min: 0, placeholder: 'min', value: f.npMin, style: { width: '80px' }, onchange: e => set('npMin', e.target.value) }),
+        h('input', { type: 'number', min: 0, placeholder: 'max', value: f.npMax, style: { width: '80px' }, onchange: e => set('npMax', e.target.value) }))));
+      body.append(sec('When',
+        h('div', { class: 'row' }, sel('year', [opt('', 'Any year', f.year), ...years.map(y => opt(y, y, f.year))]),
+          sel('month', [opt('', 'Any month', f.month), ...['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => opt(i + 1, m, f.month))])),
+        h('div', { class: 'row' }, h('input', { type: 'date', value: f.dateFrom, 'aria-label': 'From', onchange: e => set('dateFrom', e.target.value) }), '–',
+          h('input', { type: 'date', value: f.dateTo, 'aria-label': 'To', onchange: e => set('dateTo', e.target.value) })),
+        chips([['', 'Any time'], ['morning', 'Morning'], ['afternoon', 'Afternoon'], ['evening', 'Evening'], ['night', 'Night']], 'tod'),
+        sel('noDate', [opt('any', 'Include photos with no date', f.noDate), opt('exclude', 'Hide photos with no date', f.noDate), opt('only', 'Only photos with no date', f.noDate)])));
+      body.append(sec('Where',
+        h('div', { class: 'row' }, sel('country', [opt('', 'Any country', f.country), ...[...countries.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([cc, n]) => opt(cc, n, f.country))]),
+          sel('city', [opt('', 'Any city', f.city), ...cities.map(([c, n]) => opt(c, `${c} (${n})`, f.city))])),
+        h('div', { class: 'row' }, h('span', { class: 'muted small' }, 'Radius'),
+          h('input', { type: 'text', inputmode: 'decimal', placeholder: 'lat', value: f.rLat, style: { width: '90px' }, onchange: e => set('rLat', e.target.value) }),
+          h('input', { type: 'text', inputmode: 'decimal', placeholder: 'lon', value: f.rLon, style: { width: '90px' }, onchange: e => set('rLon', e.target.value) }),
+          h('input', { type: 'number', placeholder: 'km', value: f.rKm, style: { width: '70px' }, onchange: e => set('rKm', e.target.value) })),
+        sel('noLoc', [opt('any', 'Include photos with no location', f.noLoc), opt('exclude', 'Hide photos with no location', f.noLoc), opt('only', 'Only photos with no location', f.noLoc)])));
+      body.append(sec('Camera',
+        h('div', { class: 'row' }, sel('camera', [opt('', 'Any camera', f.camera), ...cnt('cam').map(([c, n]) => opt(c, `${c} (${n})`, f.camera))]),
+          sel('facing', [opt('', 'Front and rear', f.facing), opt('front', 'Front (selfie)', f.facing), opt('rear', 'Rear', f.facing), opt('unknown', 'Unknown', f.facing)])),
+        provider.kind === 'pc' ? sel('src', [opt('', 'Phone and folders', f.src), opt('phone', 'Phone', f.src), opt('folder', 'Folders (Takeout)', f.src)]) : null));
+      upd();
     }
-    g.append(field('People', peopleBox));
-
-    g.append(field('Year', sel('year', [opt('', 'Any year', f.year), ...years.map(y => opt(y, y, f.year))])));
-    g.append(field('Month', sel('month', [opt('', 'Any month', f.month), ...['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => opt(i + 1, m, f.month))])));
-    g.append(field('Date range', h('div', { class: 'row' },
-      h('input', { type: 'date', value: f.dateFrom, onchange: e => setF('dateFrom', e.target.value) }),
-      h('input', { type: 'date', value: f.dateTo, onchange: e => setF('dateTo', e.target.value) }))));
-    g.append(field('Time of day', sel('tod', [opt('', 'Any time', f.tod), opt('morning', 'Morning (5-12)', f.tod), opt('afternoon', 'Afternoon (12-17)', f.tod), opt('evening', 'Evening (17-21)', f.tod), opt('night', 'Night (21-5)', f.tod)])));
-    g.append(field('No date', sel('noDate', [opt('any', 'Include photos with no date', f.noDate), opt('exclude', 'Hide photos with no date', f.noDate), opt('only', 'Only photos with no date', f.noDate)])));
-
-    g.append(field('Country', sel('country', [opt('', 'Any country', f.country), ...[...countries.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([cc, n]) => opt(cc, n, f.country))])));
-    g.append(field('City', sel('city', [opt('', 'Any city', f.city), ...cities.map(([c, n]) => opt(c, `${c} (${n})`, f.city))])));
-    g.append(field('Radius around a point (lat, lon, km)', h('div', { class: 'row' },
-      h('input', { type: 'text', inputmode: 'decimal', placeholder: 'lat', value: f.rLat, style: { width: '30%' }, onchange: e => setF('rLat', e.target.value) }),
-      h('input', { type: 'text', inputmode: 'decimal', placeholder: 'lon', value: f.rLon, style: { width: '30%' }, onchange: e => setF('rLon', e.target.value) }),
-      h('input', { type: 'number', placeholder: 'km', value: f.rKm, style: { width: '25%' }, onchange: e => setF('rKm', e.target.value) }))));
-    g.append(field('No location', sel('noLoc', [opt('any', 'Include photos with no location', f.noLoc), opt('exclude', 'Hide photos with no location', f.noLoc), opt('only', 'Only photos with no location', f.noLoc)])));
-
-    g.append(field('Camera', sel('camera', [opt('', 'Any camera', f.camera), ...cnt('cam').map(([c, n]) => opt(c, `${c} (${n})`, f.camera))])));
-    g.append(field('Camera side', sel('facing', [opt('', 'Front and rear', f.facing), opt('front', 'Front (selfie)', f.facing), opt('rear', 'Rear', f.facing), opt('unknown', 'Unknown', f.facing)])));
-    g.append(field('Number of people', h('div', { class: 'row' },
-      h('input', { type: 'number', min: 0, placeholder: 'min', value: f.npMin, style: { width: '45%' }, onchange: e => setF('npMin', e.target.value) }),
-      h('input', { type: 'number', min: 0, placeholder: 'max', value: f.npMax, style: { width: '45%' }, onchange: e => setF('npMax', e.target.value) }))));
-    if (provider.kind === 'pc') g.append(field('Source', sel('src', [opt('', 'Phone and folders', f.src), opt('phone', 'Phone', f.src), opt('folder', 'Folders (Takeout)', f.src)])));
-    g.append(h('div', {}, h('label', {}, ' '), h('button', { onclick: () => { f = { ...DEFAULT_F }; saveFilters(f); buildFilters(); refresh(); } }, 'Clear all filters')));
-    filtersBox.append(g);
+    draw();
   }
 
-  function activeCount() {
-    return Object.keys(DEFAULT_F).filter(k => k !== 'sort' && JSON.stringify(f[k]) !== JSON.stringify(DEFAULT_F[k])).length;
-  }
-
+  // ------------------------------------------------------------ list
   function refresh() {
-    list = applyFilters(index.photos, f, meId());
-    if (searchRes) list = list.filter(p => searchRes.has(p.id)).sort((a, b) => searchRes.get(b.id) - searchRes.get(a.id));
-    const scored = list.filter(p => p.s !== null && p.s !== undefined).length;
+    const key = sk();
+    let base = applyFilters(index.photos, f, meId());
+    if (group) base = base.filter(p => group.ids.has(p.id));
+    if (searchRes) base = base.filter(p => searchRes.has(p.id)).sort((a, b) => searchRes.get(b.id) - searchRes.get(a.id));
+    if (f.bursts) {
+      const c = collapseBursts(base, key);
+      others = c.others;
+      list = [];
+      for (const p of c.items) { list.push(p); if (p.b !== null && p.b !== undefined && expanded.has(p.b) && others.has(p.b)) list.push(...others.get(p.b)); }
+    } else { list = base; others = new Map(); }
+    groupBar.style.display = group ? '' : 'none';
+    if (group) { groupBar.innerHTML = ''; groupBar.append(h('button', { onclick: () => { group = null; mode = 'trips'; buildChips(); refresh(); } }, '← Trips'), h('b', { class: 'grow' }, group.title), h('button', { onclick: () => { group = null; refresh(); }, 'aria-label': 'Close' }, '✕')); }
+    const scored = list.filter(p => p[key] !== null && p[key] !== undefined).length;
+    const hidden = base.length - list.length;
     const m = index.model || {};
-    info.textContent = `${list.length} ${list.length === 1 ? 'photo' : 'photos'}` + (scored ? `, ${scored} with my score` : '') +
-      (m.trained ? ` · model from ${m.labels} ratings` : (index.photos.some(p => p.prior) ? ' · scores are estimates until you rate photos' : ''));
-    if (searchRes) info.textContent = `${list.length} best matches for "${searchQ}", best match first` +
-      (f.includeNoMe ? '' : ' · only photos with me (change in Filters > Photos)');
-    const sum = filtersBox.querySelector('summary span'); if (sum) sum.textContent = activeCount() ? `(${activeCount()} on)` : '';
-    if (mode === 'map') { grid.style.display = 'none'; mapBox.style.display = ''; renderMap(); }
-    else { mapBox.style.display = 'none'; grid.style.display = ''; renderGrid(true); }
+    let txt = searchRes ? `${list.length} best matches for "${searchQ}"` : `${list.length} ${list.length === 1 ? 'photo' : 'photos'}`;
+    if (hidden > 0) txt += ` (${hidden} more in bursts)`;
+    if (scored && !searchRes) txt += f.scoreMode === 'period' ? ' · score per period' : '';
+    if (!m.trained && index.photos.some(p => p.prior)) txt += ' · scores are estimates until you rate photos';
+    if (searchRes && !f.includeNoMe) txt += ' · only photos with me (tap "With me" for everyone)';
+    info.textContent = txt;
+    grid.style.display = mode === 'photos' ? '' : 'none';
+    tripsBox.style.display = mode === 'trips' ? '' : 'none';
+    mapBox.style.display = mode === 'map' ? '' : 'none';
+    if (mode === 'photos') renderGrid(true);
+    else if (mode === 'trips') renderTrips();
+    else renderMap();
   }
 
   function tile(p) {
+    const key = sk();
+    const s = p[key];
     const lowc = p.c !== null && p.c !== undefined && p.c < LOW_CONF;
+    const nOthers = p.b !== null && p.b !== undefined && others.has(p.b) ? others.get(p.b).length : 0;
     const el = h('div', { class: 'tile' + (selected.has(p.id) ? ' sel' : ''), 'data-id': p.id },
-      h('img', { src: provider.thumbUrl(p), loading: 'lazy', alt: '' }),
-      p.s !== null && p.s !== undefined ? h('span', { class: `badge ${scoreClass(p.s)}${lowc ? ' lowconf' : ''}`, title: lowc ? 'Low confidence' : '' }, (p.prior ? '~' : '') + p.s.toFixed(1)) : null,
+      h('img', { src: provider.thumbUrl(p), loading: 'lazy', alt: '', decoding: 'async' }),
+      s !== null && s !== undefined ? h('span', { class: `badge ${scoreClass(s)}${lowc ? ' lowconf' : ''}`, title: lowc ? 'Low confidence' : '' }, (p.prior ? '~' : '') + s.toFixed(1)) : null,
+      nOthers && !expanded.has(p.b) ? h('button', { class: 'stack', title: `${nOthers} more in this burst`, onclick: e => { e.stopPropagation(); expanded.add(p.b); refresh(); } }, `+${nOthers}`) : null,
+      nOthers && expanded.has(p.b) ? h('button', { class: 'stack open', title: 'Close the burst', onclick: e => { e.stopPropagation(); expanded.delete(p.b); refresh(); } }, '−') : null,
+      p.rPending ? h('span', { class: 'pend', title: `My rating ${p.r}, sends at next sync` }, `✎${p.r}`) : null,
       selecting ? h('span', { class: 'chk' }) : null);
     el.addEventListener('click', () => {
-      if (selecting) { selected.has(p.id) ? selected.delete(p.id) : selected.add(p.id); el.classList.toggle('sel'); buildTop(); }
+      if (selecting) { selected.has(p.id) ? selected.delete(p.id) : selected.add(p.id); el.classList.toggle('sel'); buildChips(); }
       else openDetail(list.indexOf(p));
     });
     return el;
   }
 
   function renderGrid(reset) {
-    if (reset) { grid.innerHTML = ''; shown = 0; }
+    if (reset) { grid.innerHTML = ''; shown = 0; lastMonth = null; }
+    const headers = !searchRes && (f.sort === 'date' || f.sort === 'date_asc');
     const end = Math.min(list.length, shown + PAGE);
     const frag = document.createDocumentFragment();
-    for (let i = shown; i < end; i++) frag.append(tile(list[i]));
+    for (let i = shown; i < end; i++) {
+      const p = list[i];
+      if (headers) { const ml = monthLabel(p.t); if (ml !== lastMonth) { frag.append(h('div', { class: 'month' }, ml)); lastMonth = ml; } }
+      frag.append(tile(p));
+    }
     grid.append(frag);
     shown = end;
+    if (!list.length) grid.append(h('div', { class: 'empty' }, searchRes ? 'No matches. Try other words, or tap "With me" to search all photos.' : 'No photos match. Open Filters and clear some of them.'));
     if (!observer) {
-      observer = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && shown < list.length && mode === 'grid') renderGrid(false); }, { rootMargin: '800px' });
+      observer = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && shown < list.length && mode === 'photos') renderGrid(false); }, { rootMargin: '1200px' });
       observer.observe(sentinel);
     }
   }
 
+  // ------------------------------------------------------------ trips and events
+  function renderTrips() {
+    const key = sk();
+    if (!tripsCache || tripsCache.key !== key) tripsCache = { key, r: findTrips(index.photos, { scoreKey: key }) };
+    const { home, trips, events } = tripsCache.r;
+    const visible = new Set(applyFilters(index.photos, f, meId()).map(p => p.id));
+    tripsBox.innerHTML = '';
+    const card = t => {
+      const ids = t.ids.filter(i => visible.has(i));
+      if (!ids.length) return null;
+      const ps = ids.map(i => byId.get(i)).sort((a, b) => (b.me - a.me) || ((b[key] ?? -1) - (a[key] ?? -1)));
+      const me = ps.filter(p => p.me);
+      const best = me.length ? Math.max(...me.map(p => p[key] ?? -1)) : null;
+      return h('button', { class: 'tripcard', onclick: () => { group = { title: `${t.title} · ${t.when}`, ids: new Set(t.ids) }; mode = 'photos'; buildChips(); refresh(); window.scrollTo(0, 0); } },
+        h('div', { class: 'mosaic' + (ps.length < 3 ? ' one' : '') }, ...ps.slice(0, 3).map(p => h('img', { src: provider.thumbUrl(p), loading: 'lazy', alt: '' }))),
+        h('div', { class: 'tripinfo' }, h('div', { class: 'triptitle' }, t.title), h('div', { class: 'muted small' }, t.when + (t.kind === 'trip' ? ` · ${t.days} ${t.days === 1 ? 'day' : 'days'}` : '')),
+          h('div', { class: 'small' }, `${ids.length} photos · ${me.length} of me`, best !== null && best >= 0 ? h('span', { class: `badge inline ${scoreClass(best)}` }, `best ${best.toFixed(1)}`) : null)));
+    };
+    const section = (title, items, note) => {
+      const cards = items.map(card).filter(Boolean);
+      tripsBox.append(h('h2', {}, title, h('span', { class: 'muted small' }, ` ${cards.length}`)));
+      if (!cards.length) tripsBox.append(h('p', { class: 'muted' }, note));
+      else tripsBox.append(h('div', { class: 'tripgrid' }, ...cards));
+    };
+    tripsBox.append(h('p', { class: 'muted small' }, home ? `Home: ${home.city}. A trip is photos more than 80 km from home.` : 'Trips need photos with a location. Events still work.'));
+    section('Trips', trips, home ? 'No trips found with these filters.' : 'No home location yet.');
+    section('Events', events, 'No events found (an event is 6 or more photos taken within a few hours).');
+    info.textContent = `${trips.length} trips and ${events.length} events`;
+  }
+
+  // ------------------------------------------------------------ map
   function renderMap() {
     if (!window.L) { mapBox.textContent = 'Map library missing.'; return; }
     if (!map) {
       map = L.map(mapBox, { preferCanvas: true }).setView([30, 10], 2);
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
-      map.on('contextmenu', e => { f.rLat = e.latlng.lat.toFixed(5); f.rLon = e.latlng.lng.toFixed(5); if (!f.rKm) f.rKm = '25'; saveFilters(f); buildFilters(); refresh(); toast('Radius center set'); });
+      map.on('contextmenu', e => { f.rLat = e.latlng.lat.toFixed(5); f.rLon = e.latlng.lng.toFixed(5); if (!f.rKm) f.rKm = '25'; saveFilters(f); buildChips(); refresh(); toast('Radius center set'); });
     }
     setTimeout(() => map.invalidateSize(), 50);
     if (mapLayer) mapLayer.remove();
     mapLayer = L.layerGroup().addTo(map);
-    const pts = [];
-    const byScore = list.map((p, i) => [p, i]).sort((a, b) => (a[0].s ?? -1) - (b[0].s ?? -1));  // best drawn last = on top
+    const key = sk(), pts = [];
+    const byScore = list.map((p, i) => [p, i]).sort((a, b) => (a[0][key] ?? -1) - (b[0][key] ?? -1));  // best drawn last = on top
     byScore.forEach(([p, i]) => {
       if (p.lat === null || p.lat === undefined) return;
       pts.push([p.lat, p.lon]);
-      const col = p.s >= 8 ? '#1f8a4c' : p.s >= 5 ? '#b7791f' : p.s ? '#c0392b' : '#666';
+      const s = p[key];
+      const col = s >= 8 ? '#1f8a4c' : s >= 5 ? '#b7791f' : s ? '#c0392b' : '#777';
       L.circleMarker([p.lat, p.lon], { radius: 7, color: '#fff', weight: 1, fillColor: col, fillOpacity: 0.9 }).on('click', () => openDetail(i)).addTo(mapLayer);
     });
     if (pts.length) map.fitBounds(pts, { maxZoom: 13, padding: [20, 20] });
-    info.textContent += ` · ${pts.length} on the map (long press or right click sets the radius center)`;
+    info.textContent += ` · ${pts.length} on the map (long press sets the radius center)`;
   }
 
   // ------------------------------------------------------------ detail view
   function openDetail(i) {
     if (i < 0 || i >= list.length) return;
-    let cur = i;
+    let cur = i, extra = null;   // extra: a burst photo opened from the strip (not in the list)
     let showBox = false;
     const modal = h('div', { class: 'modal', role: 'dialog' });
     const img = h('img', { alt: '' });
@@ -350,10 +446,10 @@ export function createGallery(root, provider) {
     const side = h('div', { class: 'side' });
     const counter = h('span', { class: 'grow small' });
     const close = () => { modal.remove(); document.removeEventListener('keydown', onKey); if (history.state && history.state.rgModal) history.back(); };
-    const go = d => { if (cur + d >= 0 && cur + d < list.length) { cur += d; show(); } };
+    const go = d => { extra = null; if (cur + d >= 0 && cur + d < list.length) { cur += d; show(); } };
     modal.append(h('div', { class: 'mtop' },
       h('button', { onclick: close, 'aria-label': 'Close' }, '✕'), counter,
-      h('button', { onclick: () => { showBox = !showBox; drawBox(); }, title: 'Show my face' }, '▢'),
+      h('button', { onclick: () => { showBox = !showBox; drawBox(); }, title: 'Show my face', 'aria-label': 'Show my face' }, '▢'),
       h('button', { onclick: () => go(-1), 'aria-label': 'Previous' }, '‹'),
       h('button', { onclick: () => go(1), 'aria-label': 'Next' }, '›')),
     h('div', { class: 'mbody' }, stage, side));
@@ -378,25 +474,41 @@ export function createGallery(root, provider) {
     }
 
     async function show() {
-      const p = list[cur];
+      const p = extra || list[cur];
       z.reset();
-      counter.textContent = `${cur + 1} / ${list.length}`;
+      counter.textContent = extra ? 'Burst photo' : `${cur + 1} / ${list.length}`;
       img.src = provider.thumbUrl(p);
       const full = new Image();
-      full.onload = () => { if (list[cur] === p) { img.src = full.src; setTimeout(drawBox, 30); } };
+      full.onload = () => { if ((extra || list[cur]) === p) { img.src = full.src; setTimeout(drawBox, 30); } };
       full.src = provider.viewUrl(p);
       side.innerHTML = '';
       side.append(h('div', { class: 'muted small' }, 'Loading…'));
       try { det = await provider.details(p); } catch (e) { side.textContent = e.message; return; }
-      if (list[cur] !== p) return;
+      if ((extra || list[cur]) !== p) return;
       side.innerHTML = '';
-      const sc = det.score ?? p.s;
       if (p.me) {
-        side.append(h('div', { style: { fontSize: '28px', fontWeight: 700 } }, sc !== null && sc !== undefined ? (p.prior || det.prior ? '~' : '') + sc.toFixed(1) : '–',
-          h('span', { class: 'small muted', style: { fontWeight: 400, marginLeft: '8px' } }, 'my score')));
+        const all = det.score ?? p.s, per = det.score_p ?? p.sp;
+        const main = f.scoreMode === 'period' ? per : all;
+        side.append(h('div', { class: 'bigscore' }, main !== null && main !== undefined ? (p.prior ? '~' : '') + main.toFixed(1) : '–',
+          h('span', {}, f.scoreMode === 'period' ? 'my score in this period' : 'my score')),
+          h('div', { class: 'small muted' }, f.scoreMode === 'period' ? `All time: ${fmt(all)}` : `Compared with the same years: ${fmt(per)}`));
         const cf = det.conf ?? p.c;
         if (cf !== null && cf !== undefined) side.append(h('div', { class: 'small', style: { color: cf < LOW_CONF ? '#ff8a7a' : '#aaa' } }, `Confidence ${Math.round(cf * 100)}%` + (cf < LOW_CONF ? ' (face small, blurred or turned away)' : '')));
         if (p.prior || det.prior) side.append(h('div', { class: 'small', style: { color: '#aaa' } }, 'Estimate from simple rules. Rate photos to train your own model.'));
+        if (provider.canRate) {
+          const curR = p.rPending ? p.r : (det.rating ?? p.r);
+          const note = h('div', { class: 'small muted' }, p.rPending ? 'Saved on the phone. It goes to the PC at the next sync.' : '');
+          const r10 = h('div', { class: 'rate10' }, ...Array.from({ length: 10 }, (_, k) => h('button', { class: curR === k + 1 ? 'cur' : '', onclick: async () => {
+            try {
+              await provider.rate(p, det, k + 1);
+              p.r = k + 1; det.rating = k + 1;
+              if (provider.kind === 'phone') { p.rPending = true; note.textContent = 'Saved on the phone. It goes to the PC at the next sync.'; }
+              else toast(`Rated ${k + 1}. The model uses it at the next training.`);
+              r10.querySelectorAll('button').forEach((b, j) => b.classList.toggle('cur', j === k));
+            } catch (e) { toast(e.message); }
+          } }, String(k + 1))));
+          side.append(h('h3', {}, 'My rating'), r10, note);
+        }
         const bd = det.breakdown || [];
         if (bd.length) {
           side.append(h('h3', {}, 'What changes my score'));
@@ -405,15 +517,16 @@ export function createGallery(root, provider) {
             h('span', {}, name, h('span', { style: { color: v >= 0 ? '#47c27a' : '#ff6b5b', marginLeft: '6px' } }, (v >= 0 ? '+' : '') + v.toFixed(1))),
             h('span', { class: 'b' }, h('i', { style: { left: v >= 0 ? '50%' : (50 - 50 * Math.abs(v) / mx) + '%', width: (50 * Math.abs(v) / mx) + '%', background: v >= 0 ? '#47c27a' : '#ff6b5b' } }))])));
         }
-        if (provider.canRate && det.me_face) {
-          side.append(h('h3', {}, 'My rating', det.rating ? `: ${det.rating}` : ''));
-          const r10 = h('div', { class: 'rate10' }, ...Array.from({ length: 10 }, (_, k) => h('button', { class: det.rating === k + 1 ? 'cur' : '', onclick: async () => {
-            try { await provider.rate(det.me_face, k + 1); p.r = k + 1; det.rating = k + 1; toast(`Rated ${k + 1}. The model uses it at the next training.`); r10.querySelectorAll('button').forEach((b, j) => b.classList.toggle('cur', j === k)); } catch (e) { toast(e.message); }
-          } }, String(k + 1))));
-          side.append(r10);
-        }
       } else {
         side.append(h('div', { class: 'muted' }, 'I am not in this photo. No score.'));
+      }
+      if (p.b !== null && p.b !== undefined) {
+        const burst = index.photos.filter(x => x.b === p.b).sort((a, b) => (b[sk()] ?? -1) - (a[sk()] ?? -1));
+        if (burst.length > 1) {
+          side.append(h('h3', {}, `Burst: ${burst.length} photos`), h('div', { class: 'burststrip' }, ...burst.map(x =>
+            h('button', { class: 'bthumb' + (x === p ? ' on' : ''), onclick: () => { extra = list.includes(x) ? null : x; if (!extra) cur = list.indexOf(x); show(); } },
+              h('img', { src: provider.thumbUrl(x), alt: '' }), x[sk()] !== null && x[sk()] !== undefined ? h('span', { class: `badge ${scoreClass(x[sk()])}` }, x[sk()].toFixed(1)) : null))));
+        }
       }
       const names = (det.faces || []).filter(x => x.name).map(x => x.name);
       if (names.length) side.append(h('h3', {}, 'People'), h('div', {}, [...new Set(names)].join(', ')));
@@ -432,7 +545,10 @@ export function createGallery(root, provider) {
     show();
   }
 
-  if (provider.kind === 'phone') window.RG_onIndexUpdated = () => reload();
+  if (provider.kind === 'phone') {
+    window.RG_onIndexUpdated = () => reload();
+    window.RG_onStatus = () => buildChips();
+  }
   reload();
   return { reload };
 }

@@ -45,7 +45,7 @@ def build_index(device_source: int | None = None) -> dict:
         for pid, rel in db.q("SELECT photo_id, rel FROM files WHERE source_id=? AND status='done' AND photo_id IS NOT NULL",
                              (device_source,)):
             mids[pid] = rel
-    rows = db.q(f"""SELECT p.*, s.score, s.conf, s.prior, s.contrib, src.kind AS src_kind
+    rows = db.q(f"""SELECT p.*, s.score, s.conf, s.prior, s.contrib, s.score_p, src.kind AS src_kind
                     FROM photos p LEFT JOIN scores s ON s.face_id=p.me_face
                     LEFT JOIN files bf ON bf.id=p.best_file LEFT JOIN sources src ON src.id=bf.source_id
                     WHERE {where}""", args)
@@ -66,6 +66,7 @@ def build_index(device_source: int | None = None) -> dict:
              "country": r["country"], "admin": r["admin"], "city": r["city"], "cam": camera_name(r["make"], r["model"]),
              "facing": r["facing"] or "unknown", "np": r["n_people"] or 0, "me": has_me,
              "s": round(r["score"], 2) if r["score"] is not None else None,
+             "sp": round(r["score_p"], 2) if r["score_p"] is not None else None,
              "c": round(r["conf"], 2) if r["conf"] is not None else None, "prior": bool(r["prior"]),
              "r": ratings.get(r["me_face"]) if has_me else None, "p": sorted(pmap.get(r["id"], [])),
              "w": r["width"], "h": r["height"], "src": "phone" if r["src_kind"] == "device" else "folder", "b": r["burst"]}
@@ -79,7 +80,7 @@ def build_index(device_source: int | None = None) -> dict:
         photos.append(d)
     q = ranking.quality()
     model = {"labels": q["ratings"], "pairs": q["pairs"], "spearman": q["spearman"], "trained": q["trained"]}
-    return {"version": 1, "generated": datetime.now().isoformat(timespec="seconds"), "model": model,
+    return {"version": 1, "index_version": 2, "generated": datetime.now().isoformat(timespec="seconds"), "model": model,
             "me_person": mid, "persons": persons, "photos": photos}
 
 
@@ -100,7 +101,7 @@ FEATURE_VIEW = [("eye_open", "Eyes open", lambda f: 1 - (f.get("eyeBlinkLeft", 0
 
 
 def photo_details(pid: int) -> dict | None:
-    r = db.q1("""SELECT p.*, s.score, s.conf, s.prior, s.contrib FROM photos p
+    r = db.q1("""SELECT p.*, s.score, s.conf, s.prior, s.contrib, s.score_p FROM photos p
                  LEFT JOIN scores s ON s.face_id=p.me_face WHERE p.id=?""", (pid,))
     if r is None:
         return None
@@ -129,7 +130,8 @@ def photo_details(pid: int) -> dict | None:
             "Camera side": {"front": "Front (selfie)", "rear": "Rear"}.get(r["facing"], "Unknown"),
             "Size": f"{r['width']} x {r['height']}", "People": r["n_people"],
             "Faces found": r["n_faces"]}
-    return {"id": pid, "me_face": r["me_face"], "score": r["score"], "conf": r["conf"], "prior": bool(r["prior"]),
+    return {"id": pid, "me_face": r["me_face"], "score": r["score"], "score_p": r["score_p"], "conf": r["conf"],
+            "prior": bool(r["prior"]),
             "breakdown": json.loads(r["contrib"]) if r["contrib"] else [], "rating": rating,
             "meta": {k: v for k, v in meta.items() if v not in (None, "")}, "features": feats, "files": files,
             "faces": faces, "w": r["width"], "h": r["height"], "burst": r["burst"], "t": r["taken_local"],

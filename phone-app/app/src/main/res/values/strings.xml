@@ -32,6 +32,10 @@
     <string name="state_not_connected">PC not reachable now</string>
     <string name="last_sync">Last sync: %1$s</string>
     <string name="never">never</string>
+    <plurals name="pending_ratings">
+        <item quantity="one">%d rating waits for the next sync</item>
+        <item quantity="other">%d ratings wait for the next sync</item>
+    </plurals>
 
     <string name="perm_photos_full">Photos: full access.</string>
     <string name="perm_photos_partial">Photos: only SELECTED photos. Only the photos you selected are synced and shown. Tap \"Grant access\" and choose \"Allow all\" to sync everything.</string>

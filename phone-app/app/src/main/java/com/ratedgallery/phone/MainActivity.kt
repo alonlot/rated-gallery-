@@ -402,6 +402,10 @@ class MainActivity : AppCompatActivity(), StatusRepo.Listener {
         findViewById<TextView>(R.id.sync_state).text = sync
         val last = if (s.lastSync > 0) DateFormat.getDateTimeInstance().format(Date(s.lastSync * 1000)) else getString(R.string.never)
         findViewById<TextView>(R.id.last_sync).text = getString(R.string.last_sync, last)
+        findViewById<TextView>(R.id.pending_ratings).apply {
+            visibility = if (s.pendingRatings > 0) View.VISIBLE else View.GONE
+            text = resources.getQuantityString(R.plurals.pending_ratings, s.pendingRatings, s.pendingRatings)
+        }
     }
 
     private fun updatePermissionUi() {

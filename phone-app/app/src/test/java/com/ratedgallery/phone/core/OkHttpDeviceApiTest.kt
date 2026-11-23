@@ -179,4 +179,78 @@ class OkHttpDeviceApiTest {
         assertEquals("bytes-of-7", received["7"])
         assertTrue(IndexStore(tmp.root).file.isFile)
     }
+
+    @Test fun postRatingsOverHttp() {
+        server.enqueue(MockResponse().setBody(
+            """{"accepted":[123],"rejected":[{"photo_id":456,"reason":"not a photo of me"}]}""",
+        ))
+        val items = listOf(PendingRating(123, 8, 1714738930123), PendingRating(456, 2, 1714738930999))
+        val r = api().postRatings(items)
+        assertEquals(RatingsResult(listOf(123L), listOf(RejectedRating(456, "not a photo of me"))), r)
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/api/device/ratings", req.path)
+        assertEquals("Bearer $token", req.getHeader("Authorization"))
+        assertTrue(req.getHeader("Content-Type")!!.startsWith("application/json"))
+        val body = JSONObject(req.body.readUtf8())
+        assertEquals(setOf("items"), body.keys().asSequence().toSet())
+        val arr = body.getJSONArray("items")
+        assertEquals(2, arr.length())
+        val first = arr.getJSONObject(0)
+        assertEquals(setOf("photo_id", "rating", "created"), first.keys().asSequence().toSet())
+        assertEquals(123L, first.getLong("photo_id"))
+        assertEquals(8, first.getInt("rating"))
+        assertEquals(1714738930123L, first.getLong("created"))
+        assertEquals(456L, arr.getJSONObject(1).getLong("photo_id"))
+    }
+
+    @Test fun postRatingsOnOldPcIs404() {
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"detail":"Not Found"}"""))
+        try {
+            api().postRatings(listOf(PendingRating(1, 5, 1))); fail()
+        } catch (e: NotFoundException) { /* ok */ }
+    }
+
+    /** End to end over HTTP: queued ratings go to the PC before the index; a 404 PC keeps them. */
+    @Test fun syncEngineSendsRatingsOverHttp() = runBlocking {
+        val paths = java.util.Collections.synchronizedList(ArrayList<String>())
+        var ratingsEndpoint = false
+        var lastBody = ""
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.path!!
+                paths += path.substringBefore('?')
+                return when {
+                    path == "/api/device/ping" -> MockResponse().setBody("""{"ok":true,"server_version":"1.0","server_name":"PC","device_id":3}""")
+                    path.startsWith("/api/device/wanted") -> MockResponse().setBody("""{"items":[],"remaining":0}""")
+                    path == "/api/device/status" -> MockResponse().setBody("""{"pending":0,"busy":false,"task":"","done":0,"total":0}""")
+                    path == "/api/device/index" -> MockResponse().setBody("""{"version":1,"persons":[],"photos":[]}""")
+                    path == "/api/device/ratings" && ratingsEndpoint -> {
+                        lastBody = request.body.readUtf8()
+                        val ids = JSONObject(lastBody).getJSONArray("items").let { a -> (0 until a.length()).map { a.getJSONObject(it).getLong("photo_id") } }
+                        MockResponse().setBody("""{"accepted":${ids.filter { it != 9L }},"rejected":[{"photo_id":9,"reason":"not a photo of me"}]}""")
+                    }
+                    else -> MockResponse().setResponseCode(404).setBody("""{"detail":"Not Found"}""")
+                }
+            }
+        }
+        val queue = RatingQueue(java.io.File(tmp.root, "q"), now = { 1714738930123 })
+        queue.set(7, 8)
+        queue.set(9, 4)
+        val engine = SyncEngine(api(), FakeMedia(emptyList()), IndexStore(tmp.root), isForeground = { false }, ratings = queue)
+
+        // Old PC: no endpoint. The queue stays, the index is still downloaded.
+        val old = engine.run(SyncEngine.Mode.QUICK) as SyncResult.Done
+        assertTrue(old.indexSaved)
+        assertEquals(2, queue.size())
+        assertEquals(listOf("/api/device/ratings", "/api/device/index"), paths.takeLast(2))
+
+        ratingsEndpoint = true
+        paths.clear()
+        val r = engine.run(SyncEngine.Mode.QUICK) as SyncResult.Done
+        assertEquals(2, r.ratingsSent)
+        assertTrue(queue.isEmpty())
+        assertEquals(listOf("/api/device/ratings", "/api/device/index"), paths.takeLast(2))
+        assertEquals(2, JSONObject(lastBody).getJSONArray("items").length())
+    }
 }

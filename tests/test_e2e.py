@@ -321,6 +321,29 @@ def test_lan_access_and_phone_sync(env):
     assert blob[:4] == b"RGV1"
     n, dim = struct.unpack("<II", blob[4:12])
     assert dim == 512 and n == len(idx["photos"]) and len(blob) == 12 + n * 8 + n * dim * 2
+    # ratings made on the phone offline: stored with their own time, sent twice = stored once, non-me rejected
+    me_photo = next(p for p in idx["photos"] if p["me"])
+    not_me = next((p for p in idx["photos"] if not p["me"]), None)
+    created = int(time.time() * 1000) + 1_000_000  # later than the ratings made earlier in this test run
+    ritems = [{"photo_id": me_photo["id"], "rating": 9, "created": created}]
+    if not_me:
+        ritems.append({"photo_id": not_me["id"], "rating": 5, "created": created})
+    for _ in range(2):
+        r = lan.post("/api/device/ratings", json={"items": ritems}, headers=H).json()
+        assert r["accepted"] == [me_photo["id"]]
+        assert (not not_me) or r["rejected"][0]["photo_id"] == not_me["id"]
+    assert db.val("SELECT COUNT(*) FROM ratings WHERE source='phone'") == 1
+    # an older phone rating does not replace a newer PC rating of the same photo
+    from ratedgallery import ranking
+    fid = db.val("SELECT me_face FROM photos WHERE id=?", (me_photo["id"],))
+    db.ex("INSERT INTO ratings(face_id,photo_id,rating,source,created) VALUES(?,?,?,?,?)", (fid, me_photo["id"], 3, "calib", created / 1000 + 10))
+    lan.post("/api/device/ratings", json={"items": [{"photo_id": me_photo["id"], "rating": 10, "created": created + 5000}]}, headers=H)
+    assert ranking.current_ratings()[fid] == 3
+    assert lan.post("/api/device/ratings", json={"items": "x"}, headers=H).status_code == 400
+    # index version 2: per-period score
+    idx2 = lan.get("/api/device/index", headers=H).json()
+    assert idx2["index_version"] == 2 and all("sp" in p for p in idx2["photos"])
+    assert all(1 <= p["sp"] <= 10 for p in idx2["photos"] if p["me"] and p["sp"] is not None)
     # a photo deleted on the phone becomes "missing"
     r = lan.post("/api/device/manifest", json={"full": True, "items": items[1:]}, headers=H).json()
     assert r["missing"] == 1
@@ -336,6 +359,17 @@ def test_lan_access_and_phone_sync(env):
 def test_originals_unchanged(env):
     assert tree_hash(env["lib"] / "takeout") == env["before"]
     assert tree_hash(env["lib"] / "phone") == env["before_phone"]
+
+
+def test_js_groups():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    out = subprocess.run([node, str(Path(__file__).parent / "groups_check.mjs")], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stdout + out.stderr
 
 
 def test_js_filters(env):

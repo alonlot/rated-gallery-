@@ -726,6 +726,38 @@ async def _run_sync(fn, *a):
     return await run_in_threadpool(fn, *a)
 
 
+@app.post("/api/device/ratings")
+def device_ratings(request: Request, body: dict = Body(...)):
+    """Ratings made on the phone (offline). Idempotent: the same item sent again makes no second rating."""
+    _device(request)
+    items = body.get("items") or []
+    if not isinstance(items, list):
+        raise HTTPException(400, "items must be a list")
+    accepted, rejected = [], []
+    for it in items[:10000]:
+        try:
+            pid, rating, created = int(it["photo_id"]), int(it["rating"]), float(it["created"]) / 1000.0
+        except (KeyError, TypeError, ValueError):
+            rejected.append({"photo_id": it.get("photo_id") if isinstance(it, dict) else None, "reason": "bad item"})
+            continue
+        if not 1 <= rating <= 10:
+            rejected.append({"photo_id": pid, "reason": "rating must be 1..10"})
+            continue
+        fid = db.val("SELECT me_face FROM photos WHERE id=?", (pid,))
+        if fid is None:
+            rejected.append({"photo_id": pid, "reason": "not a photo of me"})
+            continue
+        if not db.val("SELECT 1 FROM ratings WHERE face_id=? AND source='phone' AND created=? AND rating=?",
+                      (fid, created, rating)):
+            db.ex("INSERT INTO ratings(face_id,photo_id,rating,source,created) VALUES(?,?,?,'phone',?)",
+                  (fid, pid, rating, created))
+            pipeline.drop_preview(pid)
+        accepted.append(pid)
+    if accepted:
+        _maybe_retrain()
+    return {"accepted": accepted, "rejected": rejected}
+
+
 @app.get("/api/device/status")
 def device_status(request: Request):
     return devices.status(_device(request))

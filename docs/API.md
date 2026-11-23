@@ -184,3 +184,34 @@ Only photos on this device. The phone downloads it with each index sync.
 `RGBridge.search(query)` returns a JSON string:
 - `{"ok": true, "results": [[photo_id, sim], ...]}` (best first, rules of step 4), or
 - `{"ok": false, "reason": "<text for the user>"}`, for example when the model is not downloaded yet.
+
+## 7. Ratings made on the phone (offline)
+
+The user can rate photos of "me" (index field `"me": true`) in the phone gallery, also with no connection.
+The phone keeps a queue and sends it at the next sync. The phone never computes scores.
+
+### Bridge
+- `RGBridge.rate(photoId, rating)` -> JSON string `{"ok": true}`. `photoId` is the index `id` (number),
+  `rating` 1..10. A new rating for the same photo replaces the queued one. `rating` 0 removes the queued rating.
+- `RGBridge.getPendingRatings()` -> JSON string `{"<photoId>": {"rating": 8, "created": 1714738930123}, ...}`.
+  The gallery shows these ratings at once (marked "sends at next sync").
+- After a sync that sent ratings, the app calls `window.RG_onIndexUpdated()` as usual.
+
+### Sync
+Before `GET /api/device/index`, if the queue is not empty:
+
+```
+POST /api/device/ratings
+{"items": [{"photo_id": 123, "rating": 8, "created": 1714738930123}]}
+```
+
+Response: `{"accepted": [123], "rejected": [{"photo_id": 456, "reason": "not a photo of me"}]}`.
+The phone removes every accepted and rejected item from the queue (rejected items cannot succeed later).
+On a network error the queue stays. The PC stores each rating like a rating made on the PC (source "phone",
+time = `created`), so they count for training. Sending the same item twice does not make a second rating.
+
+## 8. Index fields added in version 2
+
+- `"sp"`: my score compared only with photos from the same period (about the same years), 1..10, or null.
+  The gallery shows `sp` instead of `s` when the user selects "Score per period".
+- The index top level has `"index_version": 2`. Older apps ignore unknown fields.

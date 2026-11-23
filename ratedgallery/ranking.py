@@ -129,8 +129,10 @@ def feature_groups(tf):
 # ---------------------------------------------------------------- labels
 
 def current_ratings():
-    return {r[0]: r[1] for r in db.q("""SELECT face_id, rating FROM ratings WHERE id IN
-              (SELECT MAX(id) FROM ratings WHERE active=1 GROUP BY face_id)""")}
+    """The newest active rating of each face (by the time it was made; phone ratings can arrive later)."""
+    return {r[0]: r[1] for r in db.q("""SELECT r.face_id, r.rating FROM ratings r WHERE r.active=1 AND NOT EXISTS
+              (SELECT 1 FROM ratings r2 WHERE r2.face_id=r.face_id AND r2.active=1
+               AND (r2.created > r.created OR (r2.created = r.created AND r2.id > r.id)))""")}
 
 
 def current_pairs():
@@ -282,6 +284,43 @@ def current_model():
     return (r[0], m) if m.get("layout") == LAYOUT else (None, None)
 
 
+def pct_to_score(p, ratings_sorted):
+    """Percentile 0..1 -> 1..10 with the distribution of my ratings (each whole rating spread over its unit)."""
+    u, cnt = np.unique(np.asarray(ratings_sorted, float), return_counts=True)
+    hi = np.cumsum(cnt) / cnt.sum()
+    lo = np.concatenate([[0.0], hi[:-1]])
+    j = np.clip(np.searchsorted(hi, p, side="left"), 0, len(u) - 1)
+    frac = (p - lo[j]) / np.maximum(hi[j] - lo[j], 1e-12)
+    return np.clip(u[j] - 0.5 + np.clip(frac, 0, 1), 1, 10)
+
+
+PERIOD_MIN = 30
+
+
+def period_scores(raw, years, ratings_sorted=None):
+    """Score of each photo compared only with photos from about the same years.
+
+    The window is the same year, then +-1, +-2, +-3 years, until it has PERIOD_MIN photos.
+    Photos with no date are compared with all photos."""
+    raw = np.asarray(raw, float)
+    years = np.asarray(years)
+    out = np.empty(len(raw))
+    dated = years >= 0
+    for y in np.unique(years):
+        sel = years == y
+        if y < 0:
+            ref = raw
+        else:
+            for k in range(4):
+                ref = raw[dated & (np.abs(years - y) <= k)]
+                if len(ref) >= PERIOD_MIN:
+                    break
+        ref = np.sort(ref)
+        p = np.interp(raw[sel], ref, np.linspace(0, 1, len(ref))) if len(ref) > 1 else np.full(sel.sum(), 0.5)
+        out[sel] = pct_to_score(p, ratings_sorted) if ratings_sorted is not None else 1 + 9 * p
+    return out
+
+
 def to_score(m, raw):
     """Map raw model output to 1..10 so that the library has the distribution of my own ratings."""
     rs = m["raw_sorted"]
@@ -289,12 +328,7 @@ def to_score(m, raw):
     # percentile of each raw value in the library (interpolated, so equal raw values are rare)
     p = np.interp(raw, rs, np.linspace(0, 1, len(rs))) if len(rs) > 1 else np.full(raw.shape, 0.5)
     # quantile of my ratings, with each whole rating r spread over [r-0.5, r+0.5] (no plateaus)
-    u, cnt = np.unique(np.asarray(m["ratings_sorted"], float), return_counts=True)
-    hi = np.cumsum(cnt) / cnt.sum()
-    lo = np.concatenate([[0.0], hi[:-1]])
-    j = np.clip(np.searchsorted(hi, p, side="left"), 0, len(u) - 1)
-    frac = (p - lo[j]) / np.maximum(hi[j] - lo[j], 1e-12)
-    return np.clip(u[j] - 0.5 + np.clip(frac, 0, 1), 1, 10)
+    return pct_to_score(p, m["ratings_sorted"])
 
 
 def prior_raw(Xh_std):
@@ -344,6 +378,10 @@ def score_all(prog=None):
         names = feature_groups(tf)
         k = (np.std(scores) / (np.std(raw) + 1e-9))
         prior = 1
+    yr = {r[0]: int(r[1][:4]) if r[1] else -1 for r in
+          db.q(f"SELECT id, taken_local FROM photos WHERE id IN ({','.join(map(str, lib.photo.tolist())) or '0'})")}
+    years = np.array([yr.get(int(pid), -1) for pid in lib.photo])
+    sp = period_scores(raw, years, m["ratings_sorted"] if m is not None else None)
     contrib = X * w * k
     nh = len(HAND)
     rows = []
@@ -361,10 +399,11 @@ def score_all(prog=None):
         top = [[a, round(b, 2)] for a, b in top if abs(b) >= 0.05][:8]
         conf = quality_conf(lib.feat[i]) * (0.6 + 0.4 * float(mfac[i]))  # face quality first, model doubt second
         rows.append((int(lib.face[i]), int(lib.photo[i]), float(raw[i]), float(scores[i]), round(conf, 3),
-                     prior, mid, json.dumps(top)))
+                     prior, mid, json.dumps(top), float(sp[i])))
     with db.tx() as c:
         c.execute("DELETE FROM scores")
-        c.executemany("INSERT INTO scores(face_id,photo_id,raw,score,conf,prior,model_id,contrib) VALUES(?,?,?,?,?,?,?,?)", rows)
+        c.executemany("INSERT INTO scores(face_id,photo_id,raw,score,conf,prior,model_id,contrib,score_p) "
+                      "VALUES(?,?,?,?,?,?,?,?,?)", rows)
     return len(rows)
 
 

@@ -118,6 +118,24 @@ class OkHttpDeviceApi(
         )
     }
 
+    override fun postRatings(items: List<PendingRating>): RatingsResult {
+        val body = JSONObject().put("items", RatingQueue.itemsJson(items)).toString()
+        val o = callJson(client, request("api/device/ratings").post(body.toRequestBody(JSON)).build())
+        val accepted = ArrayList<Long>()
+        o.optJSONArray("accepted")?.let { a ->
+            for (i in 0 until a.length()) a.optLong(i, 0).takeIf { it > 0 }?.let(accepted::add)
+        }
+        val rejected = ArrayList<RejectedRating>()
+        o.optJSONArray("rejected")?.let { a ->
+            for (i in 0 until a.length()) {
+                val r = a.optJSONObject(i) ?: continue
+                val id = r.optLong("photo_id", 0)
+                if (id > 0) rejected.add(RejectedRating(id, r.optString("reason", "")))
+            }
+        }
+        return RatingsResult(accepted, rejected)
+    }
+
     override fun downloadIndex(out: OutputStream) {
         // OkHttp adds Accept-Encoding: gzip and decompresses transparently.
         client.newCall(request("api/device/index").get().build()).execute().use { resp ->

@@ -17,6 +17,8 @@ data class SyncStatus(
     val message: String = "",
     /** Not in the bridge JSON: true after a 401, the UI shows "Pair again". */
     val needsRepair: Boolean = false,
+    /** Ratings made on the phone that wait for the next sync (API.md section 7). */
+    val pendingRatings: Int = 0,
 ) {
     fun toJson(): String {
         val o = JSONObject()
@@ -30,6 +32,7 @@ data class SyncStatus(
         o.put("done", done)
         o.put("total", total)
         o.put("message", message)
+        o.put("pendingRatings", pendingRatings)
         return o.toString()
     }
 
@@ -39,6 +42,8 @@ data class SyncStatus(
         const val MANIFEST = "manifest"
         const val UPLOAD = "upload"
         const val PROCESSING = "processing"
+        /** Sending the ratings made on the phone (done/total in ratings). */
+        const val RATINGS = "ratings"
         const val INDEX = "index"
         /** Search index and search model download (done/total in MB for the model). */
         const val SEARCH = "search"

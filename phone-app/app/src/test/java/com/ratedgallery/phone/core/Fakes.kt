@@ -88,6 +88,18 @@ class FakePc : DeviceApi {
         return PcStatus(p, p > 0, "Scanning", 0, 0)
     }
 
+    /** Phone ratings: every POST body received, the answer (default: accept all) and an error to throw. */
+    val ratingPosts = ArrayList<List<PendingRating>>()
+    var ratingsAnswer: ((List<PendingRating>) -> RatingsResult)? = null
+    var ratingsError: IOException? = null
+
+    override fun postRatings(items: List<PendingRating>): RatingsResult {
+        calls += "ratings"; auth()
+        ratingsError?.let { throw it }
+        ratingPosts += items
+        return ratingsAnswer?.invoke(items) ?: RatingsResult(items.map { it.photoId }, emptyList())
+    }
+
     override fun downloadIndex(out: OutputStream) {
         calls += "index"; auth()
         out.write(index.toByteArray())

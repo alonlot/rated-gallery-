@@ -136,3 +136,76 @@ details.filters > summary::-webkit-details-marker { display: none; }
 #toast.show { opacity: 1; }
 .qr { width: 200px; height: 200px; background: #fff; padding: 6px; border-radius: 8px; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px; }
+
+/* ---------------------------------------------------------------- gallery v2 */
+.gallery .appbar { position: sticky; top: 0; z-index: 30; margin: 0 -16px 6px; padding: 10px 16px 6px; background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.searchrow { display: flex; gap: 8px; align-items: center; }
+.searchbox { flex: 1; position: relative; display: flex; align-items: center; }
+.searchbox .sicon { position: absolute; left: 12px; color: var(--muted); font-size: 18px; pointer-events: none; }
+.searchbox input[type=search] { width: 100%; min-height: 44px; padding-left: 36px; border-radius: 22px; font-size: 16px; background: var(--panel); }
+.filterbtn { min-height: 44px; border-radius: 22px; padding: 0 16px; white-space: nowrap; }
+.filterbtn.on { background: var(--accent-2); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.chiprow { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 2px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.chiprow::-webkit-scrollbar { display: none; }
+.chiprow > * { flex: none; }
+.chiprow .chip { min-height: 34px; font-size: 14px; padding: 0 12px; }
+.chip.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.chipselect { min-height: 34px; border-radius: 17px; font-size: 14px; padding: 0 8px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 17px; overflow: hidden; background: var(--panel); }
+.seg button { min-height: 32px; border: 0; border-radius: 0; background: transparent; padding: 0 12px; font-size: 14px; }
+.seg button.on { background: var(--accent); color: #fff; }
+.groupbar { display: flex; gap: 8px; align-items: center; margin: 4px 0 6px; padding: 6px 8px; background: var(--accent-2); border-radius: var(--radius); }
+.groupbar button { min-height: 36px; }
+.gallery .info { color: var(--muted); font-size: 13px; margin: 4px 2px 8px; }
+.gallery .grid { gap: 4px; }
+.month { grid-column: 1 / -1; font-weight: 700; font-size: 15px; padding: 14px 2px 4px; }
+.month:first-child { padding-top: 2px; }
+.tile .stack { position: absolute; top: 4px; right: 4px; min-height: 26px; min-width: 34px; padding: 0 7px; border-radius: 13px; border: 0; background: rgba(0,0,0,.62); color: #fff; font-size: 13px; font-weight: 600; }
+.tile .stack.open { background: var(--accent); }
+.tile .pend { position: absolute; top: 4px; left: 4px; padding: 1px 6px; border-radius: 10px; background: rgba(47,111,222,.92); color: #fff; font-size: 12px; font-weight: 700; }
+.empty { grid-column: 1 / -1; padding: 30px 10px; text-align: center; color: var(--muted); }
+.badge.inline { position: static; margin-left: 8px; display: inline-block; }
+
+/* trips */
+.trips h2 { margin: 18px 2px 8px; }
+.tripgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.tripcard { display: block; width: 100%; padding: 0; text-align: left; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); min-height: 0; }
+.mosaic { display: grid; grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; height: 190px; background: var(--line); }
+.mosaic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mosaic img:first-child { grid-row: 1 / 3; }
+.mosaic.one { grid-template-columns: 1fr; }
+.mosaic.one img:nth-child(n+2) { display: none; }
+.tripinfo { padding: 10px 12px 12px; display: grid; gap: 2px; }
+.triptitle { font-weight: 700; font-size: 17px; }
+
+/* filters sheet */
+.sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 90; }
+.sheet { position: fixed; z-index: 91; background: var(--panel); display: flex; flex-direction: column; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); box-shadow: -8px 0 30px rgba(0,0,0,.25); }
+.sheet-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 17px; }
+.sheet-body { flex: 1; overflow: auto; padding: 4px 16px 16px; }
+.sheet-body section { border-bottom: 1px solid var(--line); padding: 10px 0 14px; display: grid; gap: 8px; }
+.sheet-body section:last-child { border-bottom: 0; }
+.sheet-body h3 { margin: 4px 0 0; }
+.sheet-body select { flex: 1; min-width: 0; }
+.sheet-foot { display: flex; gap: 8px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.sheet-foot button { min-height: 48px; }
+
+/* detail */
+.bigscore { font-size: 34px; font-weight: 800; line-height: 1.1; }
+.bigscore span { font-size: 14px; font-weight: 400; color: #aaa; margin-left: 8px; }
+.burststrip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+.bthumb { position: relative; flex: none; width: 72px; height: 72px; padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: #000; min-height: 0; }
+.bthumb.on { border-color: var(--accent); }
+.bthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bthumb .badge { font-size: 11px; padding: 0 5px; left: 2px; bottom: 2px; }
+
+@media (max-width: 760px) {
+  .gallery .appbar { margin: -12px -12px 6px; padding: 10px 12px 6px; }
+  .gallery .grid { grid-template-columns: repeat(3, 1fr); gap: 2px; margin: 0 -10px; }
+  .gallery .tile { border-radius: 0; }
+  .gallery .badge { font-size: 12px; padding: 0 6px; }
+  .sheet { top: auto; left: 0; width: 100%; max-height: 88vh; border-radius: 18px 18px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.25); }
+  .sheet-head::before { content: ""; position: absolute; left: 50%; top: 6px; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: var(--line); }
+  .tripgrid { grid-template-columns: 1fr; }
+  .mosaic { height: 170px; }
+}

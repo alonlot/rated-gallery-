@@ -20,6 +20,9 @@ data class SearchInfo(val version: String, val files: Map<String, String>)
 data class DownloadInfo(val sha256: String?, val length: Long)
 data class ManifestResult(val known: Int, val new: Int, val changed: Int, val missing: Int)
 data class Wanted(val items: List<String>, val remaining: Int)
+/** Answer of POST /api/device/ratings: photo ids the PC stored, and the ones it will never accept. */
+data class RatingsResult(val accepted: List<Long>, val rejected: List<RejectedRating>)
+data class RejectedRating(val photoId: Long, val reason: String)
 data class PcStatus(val pending: Int, val busy: Boolean, val task: String, val done: Int, val total: Int)
 
 /** HTTP status error from the PC. */
@@ -39,6 +42,8 @@ interface DeviceApi {
     fun wanted(limit: Int): Wanted
     fun upload(mid: String, media: OpenedMedia)
     fun status(): PcStatus
+    /** POST /api/device/ratings (API.md section 7). Throws [NotFoundException] on a PC without the endpoint. */
+    fun postRatings(items: List<PendingRating>): RatingsResult
     /** Streams the device index into [out]. */
     fun downloadIndex(out: OutputStream)
     /** Streams the search index (binary, API.md section 6) into [out]. */

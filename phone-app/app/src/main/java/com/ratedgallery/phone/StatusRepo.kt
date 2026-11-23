@@ -46,8 +46,15 @@ object StatusRepo {
                 paired = p.paired, host = p.host, port = if (p.host.isEmpty()) 0 else p.port,
                 lastSync = p.lastSync, needsRepair = p.needsRepair,
                 connected = if (p.paired) it.connected else false,
+                pendingRatings = SyncWorker.ratingQueue(context).size(),
             )
         }
+    }
+
+    /** Re-reads the number of queued phone ratings (after a rating or a sync). */
+    fun refreshPendingRatings(context: Context) {
+        val n = SyncWorker.ratingQueue(context).size()
+        update { it.copy(pendingRatings = n) }
     }
 
     fun indexUpdated() {

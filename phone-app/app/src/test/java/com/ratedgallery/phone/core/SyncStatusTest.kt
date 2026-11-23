@@ -10,12 +10,14 @@ class SyncStatusTest {
         val s = SyncStatus(true, "192.168.1.10", 8765, true, false, 1714738930, "upload", 5, 20, "", needsRepair = true)
         val o = JSONObject(s.toJson())
         assertEquals(
-            setOf("paired", "host", "port", "connected", "syncing", "lastSync", "phase", "done", "total", "message"),
+            setOf("paired", "host", "port", "connected", "syncing", "lastSync", "phase", "done", "total", "message", "pendingRatings"),
             o.keys().asSequence().toSet(),
         )
         assertEquals(8765, o.getInt("port"))
         assertEquals(1714738930L, o.getLong("lastSync"))
         assertEquals("upload", o.getString("phase"))
         assertFalse(o.getBoolean("syncing"))
+        assertEquals(0, o.getInt("pendingRatings"))
+        assertEquals(3, JSONObject(s.copy(pendingRatings = 3).toJson()).getInt("pendingRatings"))
     }
 }

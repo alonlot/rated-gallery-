@@ -59,12 +59,15 @@ CREATE TABLE IF NOT EXISTS models(
   current INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS scores(
   face_id INTEGER PRIMARY KEY, photo_id INTEGER, raw REAL, score REAL, conf REAL, prior INTEGER,
-  model_id INTEGER, contrib TEXT);
+  model_id INTEGER, contrib TEXT, score_p REAL);
+CREATE INDEX IF NOT EXISTS ratings_face ON ratings(face_id);
 CREATE INDEX IF NOT EXISTS scores_photo ON scores(photo_id);
 CREATE TABLE IF NOT EXISTS previews(photo_id INTEGER PRIMARY KEY, path TEXT, bytes INTEGER, used REAL);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS photo_vec(photo_id INTEGER PRIMARY KEY, emb BLOB);
 """
+
+MIGRATIONS = ["ALTER TABLE scores ADD COLUMN score_p REAL"]
 
 _local = threading.local()
 _db_path: Path | None = None
@@ -102,6 +105,11 @@ def conn() -> sqlite3.Connection:
         c = connect()
         with _init_lock:
             c.executescript(SCHEMA)
+            for sql in MIGRATIONS:
+                try:
+                    c.execute(sql)
+                except sqlite3.OperationalError:
+                    pass  # already done
         _local.c, _local.key = c, key
     return c
 

@@ -10,6 +10,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.ratedgallery.phone.core.IndexStore
+import com.ratedgallery.phone.core.RatingQueue
 import com.ratedgallery.phone.core.SyncEngine
 import com.ratedgallery.phone.core.SyncListener
 import com.ratedgallery.phone.core.SyncResult
@@ -43,6 +44,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                     val cm = ctx.getSystemService(ConnectivityManager::class.java)
                     cm != null && !cm.isActiveNetworkMetered
                 },
+                ratings = ratingQueue(ctx),
             )
             val result = engine.run(mode)
             Log.i(TAG, "sync $mode: $result")
@@ -52,6 +54,8 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                     prefs.lastSync = now
                     var msg = if (result.failed > 0) "Uploaded ${result.uploaded}, could not read ${result.failed}" else
                         "Uploaded ${result.uploaded}"
+                    if (result.ratingsSent > 0) msg += ". Sent ${result.ratingsSent} ratings"
+                    if (result.ratingsError != null) msg += ". ${result.ratingsError}"
                     if (result.searchError != null) msg += ". ${result.searchError}"
                     StatusRepo.update { it.copy(lastSync = now, message = msg) }
                 }
@@ -67,6 +71,7 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             }
             Result.success()
         } finally {
+            StatusRepo.refreshPendingRatings(applicationContext)
             StatusRepo.update { it.copy(syncing = false, phase = SyncStatus.Phase.IDLE) }
             LOCK.unlock()
         }
@@ -140,6 +145,10 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             StatusRepo.undeliverable.add(mid)
         }
 
+        override suspend fun onRatingsSent(removed: Int) {
+            StatusRepo.refreshPendingRatings(applicationContext)
+        }
+
         override suspend fun onIndexSaved() {
             StatusRepo.indexUpdated()
         }
@@ -156,5 +165,8 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val isRunning: Boolean get() = LOCK.isLocked
 
         fun indexStore(ctx: Context) = IndexStore(ctx.filesDir)
+
+        /** Phone ratings waiting for the next sync. Instances for the same file share one lock. */
+        fun ratingQueue(ctx: Context) = RatingQueue(ctx.applicationContext.filesDir)
     }
 }
