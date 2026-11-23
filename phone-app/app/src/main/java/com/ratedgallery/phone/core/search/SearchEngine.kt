@@ -129,6 +129,13 @@ class SearchEngine(
         const val MSG_NO_MODEL = "Search model not downloaded yet. Connect to the PC on Wi-Fi and sync."
         const val MSG_NO_INDEX = "Search index not downloaded yet. Connect to the PC on Wi-Fi and sync."
 
+        /** Rounded to 4 decimals like the PC, plain JSON number (no exponent). */
+        fun fmt4(x: Float): String {
+            if (!x.isFinite()) return "0"
+            val s = String.format(java.util.Locale.ROOT, "%.4f", x).trimEnd('0').trimEnd('.')
+            return if (s == "-0" || s.isEmpty()) "0" else s
+        }
+
         fun toJson(r: Result): String = when (r) {
             is Result.NotReady -> JSONObject().put("ok", false).put("reason", r.reason).toString()
             is Result.Ok -> {
@@ -137,8 +144,7 @@ class SearchEngine(
                 r.results.forEachIndexed { i, (id, sim) ->
                     if (i > 0) sb.append(',')
                     // Rounded to 4 decimals, like the PC.
-                    val rounded = if (sim.isFinite()) Math.round(sim * 10000.0) / 10000.0 else 0.0
-                    sb.append('[').append(id).append(',').append(rounded).append(']')
+                    sb.append('[').append(id).append(',').append(fmt4(sim)).append(']')
                 }
                 sb.append("]}")
                 sb.toString()
