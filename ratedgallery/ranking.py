@@ -31,6 +31,7 @@ HAND = [
 ]
 HAND_KEYS = [k for k, _ in HAND]
 BEAUTY_COL = HAND_KEYS.index("beauty")
+BINARY_LABELS = {"front": ("Front camera (selfie)", "Rear camera"), "mp_ok": ("Face landmarks found", "Face landmarks not found")}
 MIN_GAIN = 0.01  # the attractiveness model is used only if it improves held-out Spearman by this much
 LABEL = dict(HAND)
 N_PCA_FACE, N_PCA_FULL = 16, 8
@@ -344,10 +345,17 @@ def score_all(prog=None):
         k = (np.std(scores) / (np.std(raw) + 1e-9))
         prior = 1
     contrib = X * w * k
+    nh = len(HAND)
     rows = []
     for i in range(len(lib)):
         agg = {}
-        for nm, v in zip(names, contrib[i]):
+        for j, (nm, v) in enumerate(zip(names, contrib[i])):
+            key = HAND_KEYS[j] if j < nh else None
+            if key in BINARY_LABELS:
+                nm = BINARY_LABELS[key][0 if X[i, j] > 0 else 1]
+            elif j < nh and abs(X[i, j]) >= 0.25:
+                # say which way this photo differs from my average photo, so "+0.5" is not misread
+                nm = f"{nm}: {'more' if X[i, j] > 0 else 'less'} than usual"
             agg[nm] = agg.get(nm, 0.0) + float(v)
         top = sorted(agg.items(), key=lambda t: -abs(t[1]))
         top = [[a, round(b, 2)] for a, b in top if abs(b) >= 0.05][:8]

@@ -126,6 +126,10 @@ def test_find_me_and_people(env):
     dana_photos = db.val("SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id=? AND assign IN ('ref','confirmed','auto')", (did,))
     assert dana_photos >= 2
     assert db.val("SELECT COUNT(*) FROM scores s JOIN faces f ON f.id=s.face_id WHERE f.person_id=?", (did,)) == 0
+    # faces of named people do not show in "unnamed groups"
+    for cl in c.get("/api/clusters").json()["clusters"]:
+        for fid in c.get(f"/api/clusters/{cl['id']}").json()["faces"]:
+            assert db.val("SELECT assign FROM faces WHERE id=?", (fid,)) not in ("ref", "confirmed", "auto")
 
 
 def test_features_for_my_photos(env):

@@ -261,19 +261,24 @@ def cluster(progress=None, k=10, edge=0.42, iters=12):
     return len(cid)
 
 
+UNNAMED = "(person_id IS NULL OR assign NOT IN ('ref','confirmed','auto'))"
+
+
 def clusters(limit=60, sample=8):
-    rows = db.q("SELECT cluster, COUNT(*) n FROM faces WHERE cluster IS NOT NULL GROUP BY cluster ORDER BY n DESC LIMIT ?",
-                (limit,))
+    """Groups of faces that have no person yet (faces of named people are left out)."""
+    rows = db.q(f"SELECT cluster, COUNT(*) n FROM faces WHERE cluster IS NOT NULL AND {UNNAMED} "
+                "GROUP BY cluster HAVING n >= 2 ORDER BY n DESC LIMIT ?", (limit,))
     out = []
     for r in rows:
-        faces = [x[0] for x in db.q("SELECT id FROM faces WHERE cluster=? ORDER BY det*size_px DESC LIMIT ?",
+        faces = [x[0] for x in db.q(f"SELECT id FROM faces WHERE cluster=? AND {UNNAMED} ORDER BY det*size_px DESC LIMIT ?",
                                     (r[0], sample))]
         out.append({"id": r[0], "n": r[1], "faces": faces})
     return out
 
 
 def cluster_faces(cid: int, limit=500):
-    return [r[0] for r in db.q("SELECT id FROM faces WHERE cluster=? ORDER BY det*size_px DESC LIMIT ?", (cid, limit))]
+    return [r[0] for r in db.q(f"SELECT id FROM faces WHERE cluster=? AND {UNNAMED} ORDER BY det*size_px DESC LIMIT ?",
+                               (cid, limit))]
 
 
 def merge_clusters(cids):

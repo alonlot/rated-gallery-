@@ -144,7 +144,7 @@ export function createGallery(root, provider) {
 
   root.innerHTML = '';
   const searchInput = h('input', { type: 'search', dir: 'auto', enterkeyhint: 'search', class: 'grow',
-    placeholder: 'Search photos: river, sunset, ים, עוגת יום הולדת…', 'aria-label': 'Search photos' });
+    placeholder: 'Search photos (any language): river, sunset…', 'aria-label': 'Search photos' });
   let searchTimer = null;
   searchInput.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(searchInput.value), 500); });
   searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(searchTimer); runSearch(searchInput.value); searchInput.blur(); } });
@@ -328,7 +328,8 @@ export function createGallery(root, provider) {
     if (mapLayer) mapLayer.remove();
     mapLayer = L.layerGroup().addTo(map);
     const pts = [];
-    list.forEach((p, i) => {
+    const byScore = list.map((p, i) => [p, i]).sort((a, b) => (a[0].s ?? -1) - (b[0].s ?? -1));  // best drawn last = on top
+    byScore.forEach(([p, i]) => {
       if (p.lat === null || p.lat === undefined) return;
       pts.push([p.lat, p.lon]);
       const col = p.s >= 8 ? '#1f8a4c' : p.s >= 5 ? '#b7791f' : p.s ? '#c0392b' : '#666';
