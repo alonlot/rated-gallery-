@@ -40,5 +40,7 @@ data class SyncStatus(
         const val UPLOAD = "upload"
         const val PROCESSING = "processing"
         const val INDEX = "index"
+        /** Search index and search model download (done/total in MB for the model). */
+        const val SEARCH = "search"
     }
 }

@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS scores(
 CREATE INDEX IF NOT EXISTS scores_photo ON scores(photo_id);
 CREATE TABLE IF NOT EXISTS previews(photo_id INTEGER PRIMARY KEY, path TEXT, bytes INTEGER, used REAL);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS photo_vec(photo_id INTEGER PRIMARY KEY, emb BLOB);
 """
 
 _local = threading.local()

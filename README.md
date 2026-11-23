@@ -56,7 +56,12 @@ photos on the PC. Give the PC a fixed IP address in your router. If the IP addre
    - Phone: large buttons, swipe toward the better photo in A/B.
    - The model trains again after every 10 new ratings and scores all your photos.
      The box at the top shows the quality (Spearman correlation on ratings the model did not train on).
-4. **Gallery**: filters (score, confidence, people, date, time of day, place, radius, camera, front/rear camera,
+4. **Search**: type what you look for in the search box of the gallery, in English or Hebrew (50+ languages),
+   for example "river", "sunset at the beach" or "עוגת יום הולדת". The best matches come first, and all filters still apply.
+   Search also works offline in the phone app (the phone downloads the 137 MB text model from the PC one time).
+   Limits: counting ("3 people"), negation ("no people"), names and text inside photos do not work well.
+   Hebrew results are a little weaker than English results. Use filters for people, dates and places.
+5. **Gallery**: filters (score, confidence, people, date, time of day, place, radius, camera, front/rear camera,
    number of people). Tap a photo for the score breakdown and all metadata. **Select** copies originals to a folder.
 
 ## What the app does with your files
@@ -78,7 +83,7 @@ photos on the PC. Give the PC a fixed IP address in your router. If the IP addre
 | CPU | 4 cores or more. Default: 5 worker processes (one core stays free). Setting: **Settings > Processing** |
 | GPU | Optional. DirectX 12 GPU with DirectML (tested target: AMD RX 6600 XT). Without it, all models run on the CPU |
 | RAM | 8 GB minimum, 16 GB recommended |
-| Disk | About 2 GB for the app and models, plus about 0.1 GB per 1,000 photos, plus the 1 GB preview cache |
+| Disk | About 3 GB for the app and models, plus about 0.1 GB per 1,000 photos, plus the 1 GB preview cache |
 | Phone | Android 10 or newer (target: Poco F6) |
 
 At start, each model is tried on DirectML. If DirectML fails for a model, that model runs on the CPU.
@@ -117,6 +122,8 @@ about two times longer.
 | Image quality | TOPIQ-NR, KonIQ-10k weights (IQA-PyTorch) | **PolyForm Noncommercial 1.0.0** |
 | General attractiveness (one input of your model) | ResNet-18 trained on SCUT-FBP5500 (official weights, converted to ONNX at install) | **SCUT-FBP5500: non-commercial research only** |
 | Offline place names | GeoNames cities1000 via reverse_geocoder | CC BY 4.0 (data), LGPL (library) |
+| Text search, photo side | OpenAI CLIP ViT-B/32 image encoder (ONNX by Xenova) | MIT |
+| Text search, text side (50+ languages, Hebrew included) | sentence-transformers clip-ViT-B-32-multilingual-v1, int8 | Apache 2.0 |
 
 Four models are for non-commercial use only. Personal use is permitted. If you sell or publish this app,
 you must replace them. Libraries: onnxruntime-directml (MIT), FastAPI (MIT), uvicorn (BSD), Pillow (MIT-CMU),

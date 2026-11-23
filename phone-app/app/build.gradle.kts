@@ -1,5 +1,7 @@
 import java.util.Properties
 
+val onnxRuntimeVersion = "1.31.1"
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -21,6 +23,12 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+
+        // ONNX Runtime ships native libraries for 4 ABIs (about 20 MB each). The app targets
+        // 64-bit ARM phones (Poco F6), so only arm64-v8a is packaged.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     signingConfigs {
@@ -54,6 +62,12 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            // Search parity tests read the reference data of the PC side (paths relative to phone-app/).
+            it.systemProperty("rg.testData", rootProject.file("../tests/data").absolutePath)
+            it.systemProperty("rg.models", rootProject.file("../data/models").absolutePath)
+            it.maxHeapSize = "2g"
+        }
     }
 
     lint {
@@ -106,9 +120,17 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Text search model (MIT license). Same Java API (ai.onnxruntime) as the desktop artifact used in tests.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:$onnxRuntimeVersion")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     // Real org.json for JVM tests (android.jar only has stubs).
     testImplementation("org.json:json:20240303")
+    // Desktop ONNX Runtime (native libs for the JVM) to run the real text model in unit tests.
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:$onnxRuntimeVersion")
 }
+
+// Unit tests run on the JVM: use the desktop ONNX Runtime there, not the Android AAR (same classes, no JVM native libs).
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") || it.name.endsWith("UnitTestCompileClasspath") }
+    .configureEach { exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android") }

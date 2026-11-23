@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from . import (__version__, auth, benchmark, catalog, config, db, devices, imaging, models, people, pipeline,
-               ranking)
+               ranking, search)
 from .tasks import runner
 
 log = logging.getLogger("ratedgallery.server")
@@ -46,6 +46,7 @@ def register_tasks():
     runner.register("score", lambda p: ranking.score_all(p))
     runner.register("export", _export_job)
     runner.register("benchmark", lambda p: benchmark.run())
+    runner.register("search_index", lambda p: search.index_job(p))
 
 
 def _match_job(p):
@@ -63,6 +64,9 @@ def _startup():
     db.conn()
     if ranking.label_counts()[0] >= 8 and ranking.current_model()[1] is None:
         runner.request("train")  # the saved model has an old feature layout: train again with the same ratings
+    if search.ready() and db.val("SELECT COUNT(*) FROM photos p LEFT JOIN photo_vec v ON v.photo_id=p.id "
+                                 "WHERE v.photo_id IS NULL", default=0):
+        runner.request("search_index")  # photos from before search existed
     if not models.missing_models() and not os.environ.get("RG_NO_BENCHMARK"):
         runner.request("benchmark")  # every start: shows the real speed (photos per minute) on this PC
 
@@ -409,6 +413,15 @@ def _export_job(p, ids, folder):
     p.message = f"Copied {copied} photos to {dst}" + (f"; {skipped} are only on the phone" if skipped else "")
 
 
+@app.get("/api/search")
+def search_photos(q: str = "", limit: int = 300):
+    if not search.ready():
+        raise HTTPException(409, "The search model is missing. Run install.bat.")
+    res = search.search(q, max(1, min(2000, limit)))
+    pending = db.val("SELECT COUNT(*) FROM photos p LEFT JOIN photo_vec v ON v.photo_id=p.id WHERE v.photo_id IS NULL", default=0)
+    return {"results": res, "not_indexed": pending}
+
+
 # ---------------------------------------------------------------- people
 
 @app.get("/api/people")
@@ -640,7 +653,43 @@ def device_ping(request: Request):
     import socket
 
     dev = _device(request)
-    return {"ok": True, "server_version": __version__, "server_name": socket.gethostname(), "device_id": dev["id"]}
+    return {"ok": True, "server_version": __version__, "server_name": socket.gethostname(), "device_id": dev["id"],
+            "search": {"version": search.MODEL_VERSION, "files": _search_file_shas()} if search.ready() else None}
+
+
+_SHA_CACHE: dict = {}
+
+
+def _search_file_shas():
+    import hashlib
+
+    out = {}
+    for name, fname in search.TEXT_FILES.items():
+        p = config.MODELS / fname
+        key = (str(p), p.stat().st_mtime, p.stat().st_size)
+        if key not in _SHA_CACHE:
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                for b in iter(lambda: f.read(1 << 20), b""):
+                    h.update(b)
+            _SHA_CACHE[key] = h.hexdigest()
+        out[name] = _SHA_CACHE[key]
+    return out
+
+
+@app.get("/api/device/model/{name}")
+def device_model(name: str, request: Request):
+    _device(request)
+    if name not in search.TEXT_FILES or not search.ready():
+        raise HTTPException(404)
+    return FileResponse(config.MODELS / search.TEXT_FILES[name], media_type="application/octet-stream",
+                        headers={"X-Sha256": _search_file_shas()[name]})
+
+
+@app.get("/api/device/search-index")
+def device_search_index(request: Request):
+    dev = _device(request)
+    return Response(search.device_blob(dev["source_id"]), media_type="application/octet-stream")
 
 
 @app.post("/api/device/manifest")

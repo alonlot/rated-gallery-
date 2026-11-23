@@ -563,6 +563,9 @@ def scan_job(prog: Progress, list_sources: bool = True):
     backfill_beauty(prog)
     prog.set_phase("Scoring")
     ranking.score_all(prog)
+    from . import search
+
+    search.index_job(prog)
     prog.message = f"{new_photos} new photos, {len(new_faces)} new faces"
 
 

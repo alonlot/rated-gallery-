@@ -22,6 +22,10 @@ FILES = {
     "clip": "clip_vit_b16_vision.onnx",
     "iqa": "topiq_nr.onnx",
     "beauty": "beauty_scut.onnx",
+    "search_vision": "clip_b32_vision.onnx",
+    "search_text": "mclip_text_q8.onnx",
+    "search_dense": "mclip_dense.f32",
+    "search_vocab": "mclip_vocab.txt",
     "landmarker": "face_landmarker.task",
 }
 

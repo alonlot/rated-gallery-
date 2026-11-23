@@ -1,10 +1,17 @@
 package com.ratedgallery.phone.core
 
+import com.ratedgallery.phone.core.search.SearchSync
 import kotlinx.coroutines.delay
 import java.io.IOException
 
 sealed class SyncResult {
-    data class Done(val uploaded: Int, val failed: Int, val indexSaved: Boolean) : SyncResult()
+    data class Done(
+        val uploaded: Int,
+        val failed: Int,
+        val indexSaved: Boolean,
+        /** Why the search files could not be updated in this run (null: fine or nothing to do). */
+        val searchError: String? = null,
+    ) : SyncResult()
     object Unreachable : SyncResult()
     object Unauthorized : SyncResult()
     object NoPermission : SyncResult()
@@ -15,6 +22,8 @@ interface SyncListener {
     suspend fun onConnected(connected: Boolean, serverName: String?) {}
     suspend fun onProgress(phase: String, done: Int, total: Int, message: String) {}
     suspend fun onIndexSaved() {}
+    /** A new search index or search model file was saved. */
+    suspend fun onSearchUpdated() {}
     /** [mid] could not be delivered in this run (unreadable on the phone or rejected by the PC). */
     suspend fun onUndeliverable(mid: String) {}
 }
@@ -32,6 +41,10 @@ class SyncEngine(
     private val listener: SyncListener = object : SyncListener {},
     private val sleep: suspend (Long) -> Unit = { delay(it) },
     private val now: () -> Long = System::currentTimeMillis,
+    /** Text search files (API.md section 6); null disables search sync. */
+    private val search: SearchSync? = null,
+    /** Model files (about 137 MB) are downloaded only on unmetered networks. */
+    private val isUnmetered: () -> Boolean = { true },
 ) {
     enum class Mode {
         /** Manifest + uploads + index. Normal sync. */
@@ -78,11 +91,39 @@ class SyncEngine(
             listener.onProgress(SyncStatus.Phase.INDEX, 0, 0, "Downloading index")
             index.save { out -> api.downloadIndex(out) }
             listener.onIndexSaved()
-            return SyncResult.Done(run.uploaded, run.failed.size, true)
+            val searchError = syncSearch(ping)
+            return SyncResult.Done(run.uploaded, run.failed.size, true, searchError)
         } catch (e: UnauthorizedException) {
             return SyncResult.Unauthorized
         } catch (e: IOException) {
             return SyncResult.Failed(e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /**
+     * After the index: the search index (every sync) and the model files (when their sha256 changed,
+     * unmetered network only). A failure here does not fail the sync; it is returned as the message.
+     */
+    private suspend fun syncSearch(ping: PingResult): String? {
+        val s = search ?: return null
+        val info = ping.search ?: return null
+        var changed = false
+        try {
+            listener.onProgress(SyncStatus.Phase.SEARCH, 0, 0, "Downloading search index")
+            s.syncIndex()
+            changed = true
+            if (s.outdated(info).isNotEmpty()) {
+                if (!isUnmetered()) return "Search model waits for Wi-Fi"
+                listener.onProgress(SyncStatus.Phase.SEARCH, 0, 0, "Downloading search model")
+                if (s.syncModels(info).isNotEmpty()) changed = true
+            }
+            return null
+        } catch (e: UnauthorizedException) {
+            throw e
+        } catch (e: IOException) {
+            return "Search update failed: ${e.message ?: e.javaClass.simpleName}"
+        } finally {
+            if (changed) listener.onSearchUpdated()
         }
     }
 

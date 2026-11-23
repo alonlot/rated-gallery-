@@ -10,3 +10,7 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# ONNX Runtime (text search): the native library creates and calls these Java classes through JNI.
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**

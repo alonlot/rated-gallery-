@@ -26,7 +26,21 @@ DOWNLOADS = [
      "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"),
     ("clip_vit_b16_vision.onnx", "https://huggingface.co/Xenova/clip-vit-base-patch16/resolve/main/onnx/vision_model.onnx",
      "b5170b47c0ecc667c9af5b42ed460c341377706d1466d177798c65fe49ea1e6b"),
+    # search, image side: CLIP ViT-B/32 image encoder (MIT)
+    ("clip_b32_vision.onnx", "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model.onnx",
+     "fd6e1402a588279d1723c7534d4bcba5bc0b14b47dfab0e46f8c47b8270d7d40"),
 ]
+# search, text side: sentence-transformers/clip-ViT-B-32-multilingual-v1 (Apache 2.0), 50+ languages incl. Hebrew
+MCLIP = "https://huggingface.co/sentence-transformers/clip-ViT-B-32-multilingual-v1/resolve/main/"
+MCLIP_FILES = {"model.onnx": ("onnx/model.onnx", "ca09969eb6e0f36fb1622654d1b47ac2025f576794f48b249a50b78d4b70373f"),
+               "dense.safetensors": ("2_Dense/model.safetensors", "d12568dc7300970a4d3dbb49068ad16cd89b99840b74b026f8e48071e9414f74"),
+               "tokenizer.json": ("tokenizer.json", "5b4e1a8171c81dfd666ae40265b9530c6e0b3d53923fe8ac493dcc84229adf81")}
+QUANT_SCRIPT = r'''
+import sys
+from onnxruntime.quantization import QuantType, quantize_dynamic
+quantize_dynamic(sys.argv[1], sys.argv[2], weight_type=QuantType.QInt8)
+print("Search text model: int8 done")
+'''
 FROM_ZIP = {"det_10g.onnx": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
             "w600k_r50.onnx": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"}
 TOPIQ_WEIGHTS_SHA = "9a73138beb3748dd6a83365610ac88fa1cd53225342c77fc9ed44a3be461354c"
@@ -112,14 +126,43 @@ def download(url: str, dst: Path, expect: str):
     tmp.replace(dst)
 
 
+def search_text_files(models: Path, tmpdir: Path):
+    """Download the multilingual text model; write vocab (one token per line) and the 512x768 dense weights."""
+    import json
+    import struct
+
+    d = tmpdir / "mclip"
+    d.mkdir(exist_ok=True)
+    for name, (rel, sha) in MCLIP_FILES.items():
+        download(MCLIP + rel, d / name, sha)
+    vocab = json.loads((d / "tokenizer.json").read_text("utf-8"))["model"]["vocab"]
+    inv = [None] * len(vocab)
+    for tok, i in vocab.items():
+        inv[i] = tok
+    if any(t is None or "\n" in t for t in inv):
+        sys.exit("Unexpected tokenizer vocabulary")
+    (models / "mclip_vocab.txt").write_text("\n".join(inv) + "\n", encoding="utf-8")
+    raw = (d / "dense.safetensors").read_bytes()
+    n = struct.unpack("<Q", raw[:8])[0]
+    info = json.loads(raw[8:8 + n])["linear.weight"]
+    a, b = info["data_offsets"]
+    if info["dtype"] != "F32" or info["shape"] != [512, 768]:
+        sys.exit("Unexpected dense layer")
+    (models / "mclip_dense.f32").write_bytes(raw[8 + n + a:8 + n + b])
+    return d / "model.onnx"
+
+
 def export_with_torch(models: Path):
-    """Export TOPIQ-NR and the SCUT-FBP5500 model to ONNX in a temporary CPU PyTorch environment."""
+    """In one temporary CPU PyTorch environment: export TOPIQ-NR and the SCUT-FBP5500 model to ONNX,
+    and make the int8 multilingual search text model."""
     need_iqa = not (models / "topiq_nr.onnx").exists()
     need_beauty = not (models / "beauty_scut.onnx").exists()
-    if not need_iqa and not need_beauty:
-        print("  ok      topiq_nr.onnx, beauty_scut.onnx")
+    need_search = not all((models / f).exists() for f in ("mclip_text_q8.onnx", "mclip_vocab.txt", "mclip_dense.f32"))
+    if not need_iqa and not need_beauty and not need_search:
+        print("  ok      topiq_nr.onnx, beauty_scut.onnx, mclip_text_q8.onnx")
         return
-    print("  export  " + ", ".join(n for n, f in (("topiq_nr.onnx", need_iqa), ("beauty_scut.onnx", need_beauty)) if f)
+    print("  export  " + ", ".join(n for n, f in (("topiq_nr.onnx", need_iqa), ("beauty_scut.onnx", need_beauty),
+                                                  ("mclip_text_q8.onnx", need_search)) if f)
           + " (temporary CPU PyTorch environment, a few minutes)")
     tmpdir = Path(tempfile.mkdtemp(prefix="rg-export-"))
     try:
@@ -147,6 +190,11 @@ def export_with_torch(models: Path):
             script = tmpdir / "export_beauty.py"
             script.write_text(BEAUTY_SCRIPT)
             subprocess.check_call([str(py), "-I", str(script), str(pth), str(models / "beauty_scut.onnx")], env=env)
+        if need_search:
+            src = search_text_files(models, tmpdir)
+            script = tmpdir / "quantize.py"
+            script.write_text(QUANT_SCRIPT)
+            subprocess.check_call([str(py), "-I", str(script), str(src), str(models / "mclip_text_q8.onnx")], env=env)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

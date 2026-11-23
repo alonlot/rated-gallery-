@@ -134,3 +134,27 @@ def test_confidence_low_for_small_blurred_turned_faces():
     assert q({**good, "face_w": 0.03}) < 0.5 * q(good)
     assert q({**good, "sharp": 1.5}) < 0.5 * q(good)
     assert q({**good, "yaw": 70.0}) < 0.5 * q(good)
+
+
+def test_wordpiece_matches_official_tokenizer():
+    from pathlib import Path
+
+    from ratedgallery import config
+    from ratedgallery.search import WordPiece
+
+    vocab = config.MODELS / "mclip_vocab.txt"
+    if not vocab.exists():
+        pytest.skip("search vocab missing (run setup_models)")
+    t = WordPiece(vocab)
+    cases = json.loads((Path(__file__).parent / "data" / "mclip_tokens.json").read_text("utf-8"))
+    for c in cases:
+        assert t.encode(c["q"]) == c["ids"], c["q"]
+
+
+def test_search_rank_rule():
+    from ratedgallery.search import rank
+
+    sims = np.array([0.10, 0.31, 0.25, 0.20, 0.30])
+    ids = np.array([1, 2, 3, 4, 5])
+    assert [i for i, _ in rank(sims, ids)] == [2, 5, 3]   # best - 0.10 = 0.21 is the cut
+    assert rank(np.array([]), np.array([])) == []

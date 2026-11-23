@@ -15,6 +15,13 @@ class GalleryBridge(activity: MainActivity) {
     @JavascriptInterface
     fun getStatus(): String = StatusRepo.status.toJson()
 
+    /**
+     * Text search (API.md section 6). JavaScript bridge methods run on a WebView background thread,
+     * not the UI thread; the first call loads the model (a few seconds), later calls are fast.
+     */
+    @JavascriptInterface
+    fun search(query: String?): String = Search.engine(app).searchJson(query ?: "")
+
     @JavascriptInterface
     fun syncNow() {
         SyncScheduler.syncNow(app, SyncEngine.Mode.FULL)

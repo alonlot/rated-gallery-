@@ -3,6 +3,7 @@ package com.ratedgallery.phone
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.work.CoroutineWorker
@@ -13,6 +14,7 @@ import com.ratedgallery.phone.core.SyncEngine
 import com.ratedgallery.phone.core.SyncListener
 import com.ratedgallery.phone.core.SyncResult
 import com.ratedgallery.phone.core.SyncStatus
+import com.ratedgallery.phone.core.search.SearchSync
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -36,6 +38,11 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                 index = indexStore(ctx),
                 isForeground = { StatusRepo.foreground.get() },
                 listener = Listener(prefs),
+                search = SearchSync(api, Search.files(ctx), onProgress = ::onModelProgress, isStopped = { isStopped }),
+                isUnmetered = {
+                    val cm = ctx.getSystemService(ConnectivityManager::class.java)
+                    cm != null && !cm.isActiveNetworkMetered
+                },
             )
             val result = engine.run(mode)
             Log.i(TAG, "sync $mode: $result")
@@ -43,8 +50,9 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
                 is SyncResult.Done -> {
                     val now = System.currentTimeMillis() / 1000
                     prefs.lastSync = now
-                    val msg = if (result.failed > 0) "Uploaded ${result.uploaded}, could not read ${result.failed}" else
+                    var msg = if (result.failed > 0) "Uploaded ${result.uploaded}, could not read ${result.failed}" else
                         "Uploaded ${result.uploaded}"
+                    if (result.searchError != null) msg += ". ${result.searchError}"
                     StatusRepo.update { it.copy(lastSync = now, message = msg) }
                 }
                 SyncResult.Unreachable -> StatusRepo.update { it.copy(connected = false, message = "PC not reachable") }
@@ -61,6 +69,21 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         } finally {
             StatusRepo.update { it.copy(syncing = false, phase = SyncStatus.Phase.IDLE) }
             LOCK.unlock()
+        }
+    }
+
+    private var lastModelReport = 0L
+
+    /** Model download progress, in MB (phase "search"). */
+    private fun onModelProgress(name: String, done: Long, total: Long) {
+        val t = SystemClock.elapsedRealtime()
+        if (t - lastModelReport < 500 && done != total) return
+        lastModelReport = t
+        val mb = 1024 * 1024
+        val d = (done / mb).toInt()
+        val tot = if (total > 0) ((total + mb - 1) / mb).toInt() else 0
+        StatusRepo.update {
+            it.copy(phase = SyncStatus.Phase.SEARCH, done = d, total = tot, message = "Downloading search model ($name)")
         }
     }
 
@@ -119,6 +142,10 @@ class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
 
         override suspend fun onIndexSaved() {
             StatusRepo.indexUpdated()
+        }
+
+        override suspend fun onSearchUpdated() {
+            Search.engine(applicationContext).invalidateIndex()
         }
     }
 

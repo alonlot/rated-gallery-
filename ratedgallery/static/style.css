@@ -17,7 +17,7 @@ button { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px soli
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: var(--bad); }
 button:disabled { opacity: .5; cursor: default; }
-input[type=text], input[type=password], input[type=number], input[type=date], select {
+input[type=text], input[type=search], input[type=password], input[type=number], input[type=date], select {
   min-height: 40px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); max-width: 100%;
 }
 input[type=range] { width: 100%; }
@@ -67,6 +67,8 @@ main#view { flex: 1; min-width: 0; padding: 16px; max-width: 1500px; }
 .cluster .faces { grid-template-columns: repeat(4, 1fr); }
 
 /* gallery */
+.searchbar { margin-bottom: 8px; flex-wrap: nowrap; }
+.searchbar input { min-height: 44px; font-size: 16px; }
 .gal-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
 @media (max-width: 760px) { .grid { grid-template-columns: repeat(3, 1fr); gap: 3px; } }

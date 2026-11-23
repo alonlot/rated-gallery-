@@ -2,6 +2,7 @@ package com.ratedgallery.phone.core
 
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 
 class FakeMedia(var items: List<MediaItem>, var readable: Boolean = true) : MediaSource {
@@ -33,13 +34,21 @@ class FakePc : DeviceApi {
     var failUploadOf: String? = null
     var neverForget: String? = null
     var autoWantNew = true
+    /** Text search: the ping `search` object, the search index bytes and the model files. */
+    var search: SearchInfo? = null
+    var searchIndex: ByteArray = ByteArray(0)
+    val models = HashMap<String, ByteArray>()
+    /** X-Sha256 header per model name; missing = the sha256 of the bytes. */
+    val modelHeaderSha = HashMap<String, String?>()
+    /** Model download breaks after this many bytes (IOException). */
+    var modelBreakAfter: Int? = null
 
     private fun auth() { if (unauthorized) throw UnauthorizedException("bad token") }
 
     override fun ping(): PingResult? {
         calls += "ping"
         auth()
-        return if (reachable) PingResult("1.0", "PC", 3) else null
+        return if (reachable) PingResult("1.0", "PC", 3, search) else null
     }
 
     override fun postManifest(json: String): ManifestResult {
@@ -83,4 +92,28 @@ class FakePc : DeviceApi {
         calls += "index"; auth()
         out.write(index.toByteArray())
     }
+
+    override fun downloadSearchIndex(out: OutputStream) {
+        calls += "search-index"; auth()
+        out.write(searchIndex)
+    }
+
+    override fun downloadModel(name: String, read: (DownloadInfo, InputStream) -> Unit) {
+        calls += "model:$name"; auth()
+        val bytes = models[name] ?: throw NotFoundException("no model $name")
+        val sha = if (modelHeaderSha.containsKey(name)) modelHeaderSha[name] else sha256(bytes)
+        val brk = modelBreakAfter
+        val input: InputStream = if (brk == null) ByteArrayInputStream(bytes) else object : InputStream() {
+            var pos = 0
+            override fun read(): Int {
+                if (pos >= brk) throw IOException("connection reset")
+                return if (pos < bytes.size) bytes[pos++].toInt() and 0xFF else -1
+            }
+        }
+        read(DownloadInfo(sha, bytes.size.toLong()), input)
+    }
 }
+
+fun sha256(b: ByteArray): String =
+    java.security.MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
+

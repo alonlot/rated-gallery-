@@ -21,6 +21,10 @@ export function pcProvider(settings = {}) {
     exportTo: (ids, folder) => api('/api/export', { method: 'POST', body: { photo_ids: ids, folder } }),
     download: p => { location.href = `/api/photo/${p.id}/original`; },
     downloadLabel: 'Download original',
+    search: async q => {
+      try { const r = await api(`/api/search?q=${encodeURIComponent(q)}`); return { ok: true, results: r.results, notIndexed: r.not_indexed }; }
+      catch (e) { return { ok: false, reason: e.message }; }
+    },
   };
 }
 
@@ -42,6 +46,10 @@ export function phoneProvider() {
     canExport: false,
     download: p => B.share(p.mid),
     downloadLabel: 'Share',
+    search: async q => {
+      if (!B.search) return { ok: false, reason: 'Update the phone app to use search.' };
+      try { return JSON.parse(B.search(q)); } catch (e) { return { ok: false, reason: String(e) }; }
+    },
     status: () => { try { return JSON.parse(B.getStatus()); } catch (e) { return {}; } },
     sync: () => B.syncNow(),
     openPC: () => B.openPC(),
@@ -128,9 +136,19 @@ export function createGallery(root, provider) {
   let mode = 'grid';
   let map = null, mapLayer = null;
   let observer = null;
+  let searchRes = null;   // Map photo id -> similarity, while a search is active
+  let searchQ = '';
   const meId = () => (index.persons.find(p => p.me) || {}).id;
 
   root.innerHTML = '';
+  const searchInput = h('input', { type: 'search', dir: 'auto', enterkeyhint: 'search', class: 'grow',
+    placeholder: 'Search photos: river, sunset, ים, עוגת יום הולדת…', 'aria-label': 'Search photos' });
+  let searchTimer = null;
+  searchInput.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(searchInput.value), 500); });
+  searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(searchTimer); runSearch(searchInput.value); searchInput.blur(); } });
+  const searchBar = h('div', { class: 'row searchbar' }, searchInput,
+    h('button', { onclick: () => { searchInput.value = ''; runSearch(''); } }, 'Clear'));
+  root.append(searchBar);
   const top = h('div', { class: 'gal-top' });
   const filtersBox = h('details', { class: 'filters' });
   const info = h('div', { class: 'muted small', style: { margin: '4px 0 8px' } });
@@ -145,6 +163,19 @@ export function createGallery(root, provider) {
   }
 
   function setF(k, v) { f[k] = v; saveFilters(f); refresh(); }
+
+  async function runSearch(q) {
+    q = (q || '').trim();
+    searchQ = q;
+    if (!q) { searchRes = null; refresh(); return; }
+    info.textContent = 'Searching…';
+    const r = await provider.search(q);
+    if (q !== searchQ) return;  // a newer search started
+    if (!r.ok) { searchRes = null; refresh(); toast(r.reason || 'Search is not available'); return; }
+    searchRes = new Map(r.results.map(([id, sim]) => [id, sim]));
+    refresh();
+    if (r.notIndexed) info.textContent += ` · ${r.notIndexed} new photos are not searchable yet`;
+  }
 
   function buildTop() {
     top.innerHTML = '';
@@ -246,10 +277,13 @@ export function createGallery(root, provider) {
 
   function refresh() {
     list = applyFilters(index.photos, f, meId());
+    if (searchRes) list = list.filter(p => searchRes.has(p.id)).sort((a, b) => searchRes.get(b.id) - searchRes.get(a.id));
     const scored = list.filter(p => p.s !== null && p.s !== undefined).length;
     const m = index.model || {};
     info.textContent = `${list.length} ${list.length === 1 ? 'photo' : 'photos'}` + (scored ? `, ${scored} with my score` : '') +
       (m.trained ? ` · model from ${m.labels} ratings` : (index.photos.some(p => p.prior) ? ' · scores are estimates until you rate photos' : ''));
+    if (searchRes) info.textContent = `${list.length} best matches for "${searchQ}", best match first` +
+      (f.includeNoMe ? '' : ' · only photos with me (change in Filters > Photos)');
     const sum = filtersBox.querySelector('summary span'); if (sum) sum.textContent = activeCount() ? `(${activeCount()} on)` : '';
     if (mode === 'map') { grid.style.display = 'none'; mapBox.style.display = ''; renderMap(); }
     else { mapBox.style.display = 'none'; grid.style.display = ''; renderGrid(true); }

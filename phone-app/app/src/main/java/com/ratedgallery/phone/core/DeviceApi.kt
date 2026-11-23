@@ -1,10 +1,23 @@
 package com.ratedgallery.phone.core
 
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 
 data class PairResult(val deviceId: Long, val token: String, val serverName: String)
-data class PingResult(val serverVersion: String, val serverName: String, val deviceId: Long)
+data class PingResult(
+    val serverVersion: String,
+    val serverName: String,
+    val deviceId: Long,
+    /** Text search info (API.md section 6), null if the PC offers no search. */
+    val search: SearchInfo? = null,
+)
+
+/** `search` of the ping answer: model version and the sha256 of each model file (`text`, `dense`, `vocab`). */
+data class SearchInfo(val version: String, val files: Map<String, String>)
+
+/** Headers of a model download: `X-Sha256` (null if missing) and the length (-1 if unknown). */
+data class DownloadInfo(val sha256: String?, val length: Long)
 data class ManifestResult(val known: Int, val new: Int, val changed: Int, val missing: Int)
 data class Wanted(val items: List<String>, val remaining: Int)
 data class PcStatus(val pending: Int, val busy: Boolean, val task: String, val done: Int, val total: Int)
@@ -28,4 +41,8 @@ interface DeviceApi {
     fun status(): PcStatus
     /** Streams the device index into [out]. */
     fun downloadIndex(out: OutputStream)
+    /** Streams the search index (binary, API.md section 6) into [out]. */
+    fun downloadSearchIndex(out: OutputStream)
+    /** GET /api/device/model/{name}: calls [read] with the headers and the body stream (never buffered in memory). */
+    fun downloadModel(name: String, read: (DownloadInfo, InputStream) -> Unit)
 }

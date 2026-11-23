@@ -14,6 +14,7 @@ import okio.source
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.TimeUnit
 
@@ -64,7 +65,10 @@ class OkHttpDeviceApi(
         val req = request("api/device/ping").get().build()
         return try {
             val o = callJson(pingClient, req)
-            PingResult(o.optString("server_version", ""), o.optString("server_name", ""), o.optLong("device_id"))
+            PingResult(
+                o.optString("server_version", ""), o.optString("server_name", ""), o.optLong("device_id"),
+                parseSearch(o.optJSONObject("search")),
+            )
         } catch (e: UnauthorizedException) {
             throw e
         } catch (e: IOException) {
@@ -123,8 +127,35 @@ class OkHttpDeviceApi(
         }
     }
 
+    override fun downloadSearchIndex(out: OutputStream) {
+        client.newCall(request("api/device/search-index").get().build()).execute().use { resp ->
+            checkStatus(resp)
+            val body = resp.body ?: throw IOException("empty search index")
+            body.byteStream().use { it.copyTo(out) }
+        }
+    }
+
+    override fun downloadModel(name: String, read: (DownloadInfo, InputStream) -> Unit) {
+        // Identity encoding: the length is known and the bytes are hashed exactly as sent.
+        val req = request("api/device/model/$name").header("Accept-Encoding", "identity").get().build()
+        client.newCall(req).execute().use { resp ->
+            checkStatus(resp)
+            val body = resp.body ?: throw IOException("empty model file")
+            val info = DownloadInfo(resp.header("X-Sha256")?.trim()?.lowercase(), body.contentLength())
+            body.byteStream().use { read(info, it) }
+        }
+    }
+
     companion object {
         const val PING_TIMEOUT_MS = 3000L
+
+        fun parseSearch(o: JSONObject?): SearchInfo? {
+            if (o == null) return null
+            val files = o.optJSONObject("files") ?: return null
+            val map = LinkedHashMap<String, String>()
+            files.keys().forEach { k -> map[k] = files.optString(k, "").trim().lowercase() }
+            return SearchInfo(o.optString("version", ""), map)
+        }
         private val JSON = "application/json".toMediaType()
 
         val defaultClient: OkHttpClient by lazy {

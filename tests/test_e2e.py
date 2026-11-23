@@ -211,6 +211,23 @@ def test_calibration_and_training(env):
     assert isinstance(sur, list)
 
 
+def test_text_search_english_and_hebrew(env):
+    from ratedgallery import db
+
+    c = env["client"]
+    assert db.val("SELECT COUNT(*) FROM photo_vec") == db.val("SELECT COUNT(*) FROM photos")
+    names = name_of_photo()
+    orange = ("me_2", "dana_0", "other1_0")  # the portraits in orange space suits
+    groups = ("group_", "dana_1", "dana_2", "me_4", "me_with_dana", "other2_1")  # photos with 2 or more people
+    for q, want in (("orange space suit", orange), ("a group of astronauts", groups), ("קבוצה של אסטרונאוטים", groups)):
+        r = c.get("/api/search", params={"q": q}).json()
+        top = [names[i] for i, _ in r["results"][:5]]
+        assert sum(any(o in n for o in want) for n in top) >= 3, (q, top)
+        sims = [s for _, s in r["results"]]
+        assert sims == sorted(sims, reverse=True) and sims[0] - sims[-1] <= 0.10 + 1e-6
+    assert c.get("/api/search", params={"q": ""}).json()["results"] == []
+
+
 def test_gallery_api(env, tmp_path):
     c = env["client"]
     idx = c.get("/api/index").json()
@@ -286,6 +303,20 @@ def test_lan_access_and_phone_sync(env):
     assert len(idx["photos"]) == len(files)
     assert all("mid" in p and "meta" in p for p in idx["photos"])
     assert any(p["me"] and p["bd"] and p["fb"] for p in idx["photos"])
+    # search on the phone: model files with checksums, and the binary search index
+    import hashlib
+    import struct
+
+    ping = lan.get("/api/device/ping", headers=H).json()
+    assert ping["search"]["version"] == "mclip-b32-v1"
+    m = lan.get("/api/device/model/dense", headers=H)
+    assert m.headers["x-sha256"] == hashlib.sha256(m.content).hexdigest() == ping["search"]["files"]["dense"]
+    assert len(m.content) == 512 * 768 * 4
+    assert lan.get("/api/device/model/other", headers=H).status_code == 404
+    blob = lan.get("/api/device/search-index", headers=H).content
+    assert blob[:4] == b"RGV1"
+    n, dim = struct.unpack("<II", blob[4:12])
+    assert dim == 512 and n == len(idx["photos"]) and len(blob) == 12 + n * 8 + n * dim * 2
     # a photo deleted on the phone becomes "missing"
     r = lan.post("/api/device/manifest", json={"full": True, "items": items[1:]}, headers=H).json()
     assert r["missing"] == 1

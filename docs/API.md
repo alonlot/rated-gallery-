@@ -140,3 +140,47 @@ Image URLs served by the app (path handler on the same origin):
 
 When a new index is saved, the app calls `window.RG_onIndexUpdated && window.RG_onIndexUpdated()` in the WebView.
 When the status changes, the app calls `window.RG_onStatus && window.RG_onStatus(<status json>)`.
+
+## 6. Text search (version 1, model `mclip-b32-v1`)
+
+Search works in 50+ languages (Hebrew and English included). The PC makes one 512-d vector per photo
+(CLIP ViT-B/32 image encoder). A query is turned into a vector with the multilingual text model
+(sentence-transformers clip-ViT-B-32-multilingual-v1, int8 ONNX). Similarity = dot product (all vectors are L2-normalized).
+
+### PC endpoints for the phone (Bearer token, as in section 3)
+
+`GET /api/device/ping` also returns:
+```
+"search": {"version": "mclip-b32-v1", "files": {"text": "<sha256>", "dense": "<sha256>", "vocab": "<sha256>"}}
+```
+
+`GET /api/device/model/{name}` with name `text`, `dense` or `vocab`: the file bytes. Header `X-Sha256` has the sha256.
+The phone downloads a file only when its sha256 differs from the stored one (about 137 MB in total, one time).
+- `text`: ONNX, inputs `input_ids` int64 [1, L] and `attention_mask` int64 [1, L] (all ones), output `last_hidden_state` float32 [1, L, 768].
+- `dense`: 512 x 768 float32 little-endian, row-major (the weight W of a linear layer without bias: out = W . x).
+- `vocab`: UTF-8 text, one token per line; the line number (from 0) is the token id. 119547 lines.
+
+`GET /api/device/search-index`: binary, little-endian:
+`b"RGV1"`, uint32 n, uint32 dim (512), then n int64 photo ids, then n*dim float16 vectors (row per photo, same order).
+Only photos on this device. The phone downloads it with each index sync.
+
+### Query vector (phone and PC must do exactly this)
+1. Tokenize (BERT WordPiece, cased, no lowercasing, no accent removal):
+   - Clean: remove U+0000, U+FFFD and control characters (Unicode categories Cc, Cf, Cs, Co, Cn, but keep \t \n \r);
+     every whitespace character becomes a space; put spaces around CJK ideographs
+     (U+4E00-9FFF, 3400-4DBF, 20000-2A6DF, 2A700-2B73F, 2B740-2B81F, 2B820-2CEAF, F900-FAFF, 2F800-2FA1F).
+   - Split on spaces. Split every punctuation character into its own word (ASCII 33-47, 58-64, 91-96, 123-126,
+     or Unicode category P*).
+   - WordPiece per word: if longer than 100 characters -> [UNK]. Else greedy longest match from the start;
+     pieces after the first have the prefix "##"; if a part has no match, the whole word becomes [UNK] (id 100).
+   - ids = [101] + pieces + [102], cut to 128 tokens (keep [102] last).
+   - Reference cases: tests/data/mclip_tokens.json (query -> ids), made with the official `tokenizers` library.
+2. Run the text model. Mean of last_hidden_state over all tokens (CLS and SEP included).
+3. v = W . mean (512). Normalize v to length 1.
+4. sim = vector . v for each photo. Sort descending. Keep at most 300 results and only results with
+   sim >= best - 0.10.
+
+### WebView bridge (offline gallery)
+`RGBridge.search(query)` returns a JSON string:
+- `{"ok": true, "results": [[photo_id, sim], ...]}` (best first, rules of step 4), or
+- `{"ok": false, "reason": "<text for the user>"}`, for example when the model is not downloaded yet.
