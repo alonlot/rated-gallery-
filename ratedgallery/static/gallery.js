@@ -151,6 +151,8 @@ export function createGallery(root, provider) {
   let searchRes = null, searchQ = '';
   let pending = {};
   let tripsCache = null;
+  let statusChip = null;      // phone: the "PC connected / Offline" chip, updated in place
+  let reloadWaiting = false;  // phone: a new index arrived while the user was busy; shown as a chip
   let map = null, mapLayer = null, observer = null;
   const meId = () => (index.persons.find(p => p.me) || {}).id;
   const sk = () => scoreKey(f);
@@ -177,9 +179,21 @@ export function createGallery(root, provider) {
     try { index = await provider.loadIndex(); } catch (e) { info.textContent = 'Could not load photos: ' + e.message; return; }
     byId = new Map(index.photos.map(p => [p.id, p]));
     tripsCache = null;
+    reloadWaiting = false;
     applyPending();
     buildChips(); refresh();
   }
+
+  // The phone saves a new index during long syncs. Reloading redraws the grid from the top, so do it at once only
+  // when the user is at the top of the grid and not in a photo, a menu or a sheet; otherwise offer it as a chip.
+  function userBusy() {
+    const a = document.activeElement;
+    return window.scrollY > 200 || !!document.querySelector('.modal, .sheet') || (a && (a.tagName === 'SELECT' || a.tagName === 'INPUT'));
+  }
+  function onIndexUpdated() {
+    if (userBusy()) { reloadWaiting = true; buildChips(); } else reload();
+  }
+  function statusText(st) { return st.connected ? '● PC connected' : '○ Offline'; }
 
   function applyPending() {
     pending = provider.pending() || {};
@@ -232,7 +246,9 @@ export function createGallery(root, provider) {
     }
     if (provider.kind === 'phone') {
       const st = provider.status() || {};
-      chipRow.append(chip(st.connected ? '● PC connected' : '○ Offline', false, () => { provider.sync(); toast('Sync started'); }, 'Tap to sync'),
+      if (reloadWaiting) chipRow.append(chip('Updated scores ↻', true, () => { reload(); window.scrollTo(0, 0); }, 'New scores from the PC. Tap to show them.'));
+      statusChip = chip(statusText(st), false, () => { provider.sync(); toast('Sync started'); }, 'Tap to sync');
+      chipRow.append(statusChip,
         chip(provider.mapEnabled ? 'Map off' : 'Map on', false, () => { provider.mapEnabled = !provider.mapEnabled; provider.setMap(provider.mapEnabled); if (!provider.mapEnabled && mode === 'map') mode = 'photos'; buildChips(); refresh(); }));
     }
     const n = activeCount();
@@ -558,8 +574,13 @@ export function createGallery(root, provider) {
   }
 
   if (provider.kind === 'phone') {
-    window.RG_onIndexUpdated = () => reload();
-    window.RG_onStatus = () => buildChips();
+    window.RG_onIndexUpdated = () => onIndexUpdated();
+    // Status arrives every few seconds, more often during a sync. Rebuilding the chips here closed the open sort
+    // menu (the <select> was replaced), so only the text of the status chip changes.
+    window.RG_onStatus = st => {
+      const text = statusText(st || provider.status() || {});
+      if (statusChip && statusChip.textContent !== text) statusChip.textContent = text;
+    };
   }
   reload();
   return { reload };
