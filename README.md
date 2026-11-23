@@ -115,9 +115,10 @@ about two times longer.
 | Blink, smile, mouth, brows, head pose | MediaPipe Face Landmarker | Apache 2.0 |
 | Face and photo embeddings | OpenAI CLIP ViT-B/16 image encoder (ONNX by Xenova) | MIT |
 | Image quality | TOPIQ-NR, KonIQ-10k weights (IQA-PyTorch) | **PolyForm Noncommercial 1.0.0** |
+| General attractiveness (one input of your model) | ResNet-18 trained on SCUT-FBP5500 (official weights, converted to ONNX at install) | **SCUT-FBP5500: non-commercial research only** |
 | Offline place names | GeoNames cities1000 via reverse_geocoder | CC BY 4.0 (data), LGPL (library) |
 
-Three models are for non-commercial use only. Personal use is permitted. If you sell or publish this app,
+Four models are for non-commercial use only. Personal use is permitted. If you sell or publish this app,
 you must replace them. Libraries: onnxruntime-directml (MIT), FastAPI (MIT), uvicorn (BSD), Pillow (MIT-CMU),
 pillow-heif (BSD-3, includes LGPL libheif), imagehash (BSD-2), NumPy and SciPy (BSD), qrcode (BSD),
 psutil (BSD), Leaflet (BSD-2, stored in `ratedgallery/static/vendor`). Map tiles: OpenStreetMap (ODbL).
@@ -130,6 +131,11 @@ Phone app: AndroidX (Apache 2.0), OkHttp (Apache 2.0).
 - **After 10 or more ratings**: a ridge regression on about 27 measured values plus reduced CLIP embeddings
   (16 dimensions for the face, 8 for the photo). A/B comparisons are pairwise ranking constraints in the same model.
   The regularization is selected by cross-validation.
+- **General attractiveness model (SCUT-FBP5500)**: it is only one input of your model, never a score of its own.
+  At each training, the app measures the held-out Spearman with and without it, on the same folds. It uses the model
+  only if it improves your Spearman by 0.01 or more. The Calibrate page shows the result. Its input is the mean of
+  4 views of the face crop, because one crop gives unstable values. This model was trained on front-facing studio
+  photos rated by a small group of people. It has a known bias, and it often gives blurred faces a higher value.
 - The model output is mapped to 1 to 10 so that the library has the same distribution as your own ratings.
 - **Confidence** is low when your face is small, blurred, turned away or partly hidden, and when the model is unsure
   (20 bootstrap models disagree).

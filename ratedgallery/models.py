@@ -21,6 +21,7 @@ FILES = {
     "arcface": "w600k_r50.onnx",
     "clip": "clip_vit_b16_vision.onnx",
     "iqa": "topiq_nr.onnx",
+    "beauty": "beauty_scut.onnx",
     "landmarker": "face_landmarker.task",
 }
 
@@ -241,6 +242,38 @@ class IQA:
         for a in imgs384:
             x = (a.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
             out.append(float(self.sess.run(None, {"image": x})[0].reshape(-1)[0]))
+        return out
+
+
+# ---------------------------------------------------------------- general attractiveness model (SCUT-FBP5500)
+
+IMNET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+IMNET_STD = np.array([0.229, 0.224, 0.225], np.float32)
+
+
+class Beauty:
+    """ResNet-18 trained on SCUT-FBP5500 (scale 1..5). Used only as ONE input of the personal model.
+
+    Input: the cached 256 px face crop (square, margin 1.6). The score is the mean of 4 views
+    (margin 1.6 resized, margin 1.4 center crop, and both mirrored), because one crop is unstable.
+    """
+
+    def __init__(self):
+        self.sess = _session("beauty", lambda s: s.run(None, {"image": np.zeros((4, 3, 224, 224), np.float32)}))
+
+    @staticmethod
+    def views(crop256: np.ndarray):
+        a = cv2.resize(crop256, (224, 224), interpolation=cv2.INTER_AREA)
+        o = (crop256.shape[0] - 224) // 2
+        b = crop256[o:o + 224, o:o + 224]
+        return [a, a[:, ::-1], b, b[:, ::-1]]
+
+    def score(self, crops256: list[np.ndarray]) -> list[float]:
+        out = []
+        for c in crops256:
+            v = np.stack(self.views(c)).astype(np.float32) / 255.0
+            x = ((v - IMNET_MEAN) / IMNET_STD).transpose(0, 3, 1, 2).copy()
+            out.append(float(self.sess.run(None, {"image": x})[0].mean()))
         return out
 
 

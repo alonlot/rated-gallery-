@@ -189,11 +189,11 @@ async function renderPerson(pid) {
   const ucard = h('div', { class: 'card' }, h('h2', { style: { marginTop: 0 } }, `Is this ${p.is_me ? 'me' : p.name}? (${p.nunc})`),
     h('p', { class: 'small muted' }, 'Your answers improve the matching for all photos.'));
   if (!unc.faces.length) ucard.append(h('div', { class: 'muted' }, 'Nothing to check now.'));
-  const ugrid = h('div', { class: 'faces' });
+  const ugrid = h('div', { class: 'faces qfaces' });
   for (const f of unc.faces) {
-    const el = h('div', { class: 'face' }, faceImg(f.id));
+    const el = h('div', { class: 'qface' }, faceImg(f.id));
     const answer = async action => { el.remove(); await api(`/api/persons/${pid}/faces`, { method: 'POST', body: { action, face_ids: [f.id] } }); };
-    el.append(h('div', { class: 'acts' }, h('button', { class: 'yes', onclick: e => { e.stopPropagation(); answer('confirm'); } }, '✓'), h('button', { class: 'no', onclick: e => { e.stopPropagation(); answer('reject'); } }, '✕')));
+    el.append(h('div', { class: 'acts' }, h('button', { class: 'yes', 'aria-label': 'Yes', onclick: () => answer('confirm') }, '✓'), h('button', { class: 'no', 'aria-label': 'No', onclick: () => answer('reject') }, '✕')));
     ugrid.append(el);
   }
   ucard.append(ugrid);
@@ -220,7 +220,8 @@ async function renderCalibrate() {
   const showModel = m => {
     if (!m) return;
     q.innerHTML = '';
-    q.append(h('b', {}, m.message), h('div', { class: 'muted' }, `${m.ratings} ratings, ${m.pairs} comparisons` + (m.spearman !== null && m.spearman !== undefined ? `, Spearman ${m.spearman.toFixed(2)} on held-out ratings` : '')));
+    q.append(h('b', {}, m.message), h('div', { class: 'muted' }, `${m.ratings} ratings, ${m.pairs} comparisons` + (m.spearman !== null && m.spearman !== undefined ? `, Spearman ${m.spearman.toFixed(2)} on held-out ratings` : '')),
+      m.beauty && m.beauty.message ? h('div', { class: 'muted' }, m.beauty.message) : null);
   };
 
   const next = async (forceItem) => {
@@ -292,10 +293,10 @@ async function renderSurprising() {
   const grid = h('div', { class: 'grid' });
   for (const d of r.items) {
     const t = h('div', { class: 'tile' }, h('img', { src: `/api/face/${d.face_id}/large`, loading: 'lazy' }),
-      h('span', { class: 'badge ' + scoreClass(d.rating) }, `me ${d.rating} · model ${d.predicted}`));
+      h('span', { class: 'badge ' + scoreClass(d.rating) }, `me ${d.rating} · model ${Number(d.predicted).toFixed(1)}`));
     t.onclick = () => {
       const n = prompt(`New rating for this photo (1-10). Now: ${d.rating}`, d.rating);
-      if (n && +n >= 1 && +n <= 10) api('/api/calib/rate', { method: 'POST', body: { face_id: d.face_id, rating: +n, source: 'correction' } }).then(() => { toast('Saved'); t.querySelector('.badge').textContent = `me ${n} · model ${d.predicted}`; });
+      if (n && +n >= 1 && +n <= 10) api('/api/calib/rate', { method: 'POST', body: { face_id: d.face_id, rating: +n, source: 'correction' } }).then(() => { toast('Saved'); t.querySelector('.badge').textContent = `me ${n} · model ${Number(d.predicted).toFixed(1)}`; });
     };
     grid.append(t);
   }

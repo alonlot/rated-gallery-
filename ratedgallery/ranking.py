@@ -14,7 +14,7 @@ import numpy as np
 from . import config, db
 
 log = logging.getLogger("ratedgallery.ranking")
-LAYOUT = 1  # change when the feature layout changes; old models are then ignored
+LAYOUT = 2  # change when the feature layout changes; old models are then ignored
 
 HAND = [
     ("eye_open", "Eyes open"), ("eye_asym", "One eye more closed"), ("smile", "Smile"),
@@ -27,8 +27,11 @@ HAND = [
     ("face_size", "Face large in frame"), ("front", "Front camera (selfie)"), ("det", "Face clearly visible"),
     ("emb_norm", "Face detail (identity model)"), ("me_sim", "Looks like my references"),
     ("iqa", "Image quality (TOPIQ)"), ("mp_ok", "Face landmarks found"),
+    ("beauty", "General attractiveness model"),
 ]
 HAND_KEYS = [k for k, _ in HAND]
+BEAUTY_COL = HAND_KEYS.index("beauty")
+MIN_GAIN = 0.01  # the attractiveness model is used only if it improves held-out Spearman by this much
 LABEL = dict(HAND)
 N_PCA_FACE, N_PCA_FULL = 16, 8
 PRIOR_W = {"eye_open": 1.0, "eye_asym": -0.5, "smile": 0.5, "smile2": -0.2, "sharp": 0.8, "face_mean_dev": -0.6,
@@ -49,7 +52,7 @@ def hand_vector(f: dict) -> list:
             f.get("clip_hi", 0.0), f.get("clip_lo", 0.0), f.get("bg_contrast", 0.0),
             float(np.log(max(f.get("face_frac", 1e-4), 1e-5))),
             {"front": 1.0, "rear": 0.0}.get(f.get("facing"), 0.5), f.get("det", 0.8), f.get("emb_norm", 20.0),
-            f.get("me_sim", 0.5), f.get("iqa", 0.5), f.get("mp_ok", 1.0)]
+            f.get("me_sim", 0.5), f.get("iqa", 0.5), f.get("mp_ok", 1.0), f.get("beauty", float("nan"))]
 
 
 # ---------------------------------------------------------------- library
@@ -216,25 +219,45 @@ def train(prog=None):
         return None
     tf, X = fit_transform(lib)
     if prog:
-        prog.set_phase("Training my model", 3)
-    alpha = _best_alpha(X, ridx, y, pairs, ALPHAS)
+        prog.set_phase("Training my model", 4)
+    full = np.ones(X.shape[1], dtype=bool)
+    nob = full.copy()
+    nob[BEAUTY_COL] = False
+    sp_with = sp_without = oof_with = oof_without = None
+    if len(ridx) >= 10:
+        # same folds (same seed) for both, so the comparison is fair
+        oof_without = _cv(X[:, nob], ridx, y, pairs, ALPHAS, inner=True)
+        sp_without = _spearman(oof_without, y)
+        if prog:
+            prog.step()
+        oof_with = _cv(X, ridx, y, pairs, ALPHAS, inner=True)
+        sp_with = _spearman(oof_with, y)
     if prog:
         prog.step()
-    oof = _cv(X, ridx, y, pairs, ALPHAS, inner=True) if len(ridx) >= 10 else None
-    sp = _spearman(oof, y) if oof is not None else None
+    use_beauty = sp_with is not None and sp_without is not None and sp_with >= sp_without + MIN_GAIN
+    mask = full if use_beauty else nob
+    oof, sp = (oof_with, sp_with) if use_beauty else (oof_without, sp_without)
+    Xm = X[:, mask]
+    alpha = _best_alpha(Xm, ridx, y, pairs, ALPHAS)
     if prog:
         prog.step()
-    w, b = _solve(X, y, ridx, pairs, alpha)
+    wm, b = _solve(Xm, y, ridx, pairs, alpha)
+    w = np.zeros(X.shape[1])
+    w[mask] = wm
     rng = np.random.default_rng(1)
     boot = []
     for _ in range(20):
-        s = rng.choice(len(ridx), len(ridx), replace=True)
+        s_ = rng.choice(len(ridx), len(ridx), replace=True)
         bp = [pairs[i] for i in rng.choice(len(pairs), len(pairs), replace=True)] if pairs else []
-        boot.append(_solve(X, y[s], ridx[s], bp, alpha))
+        bw, bb = _solve(Xm, y[s_], ridx[s_], bp, alpha)
+        full_w = np.zeros(X.shape[1])
+        full_w[mask] = bw
+        boot.append((full_w, bb))
     raw = X @ w + b
     m = {"layout": LAYOUT, "tf": tf, "w": w, "b": b, "alpha": alpha, "boot_w": np.array([x[0] for x in boot]),
          "boot_b": np.array([x[1] for x in boot]), "ratings_sorted": np.sort(y), "raw_sorted": np.sort(raw),
-         "spearman": sp, "n_labels": len(ridx), "n_pairs": len(pairs)}
+         "spearman": sp, "n_labels": len(ridx), "n_pairs": len(pairs),
+         "beauty": {"used": bool(use_beauty), "with": sp_with, "without": sp_without}}
     if oof is not None:
         m["oof"] = [(int(lib.face[i]), float(yy), float(o)) for i, yy, o in zip(ridx, y, oof)]
     with db.tx() as c:
@@ -338,6 +361,9 @@ def score_all(prog=None):
 
 
 def train_job(prog):
+    from .pipeline import backfill_beauty
+
+    backfill_beauty(prog)
     m = train(prog)
     prog.set_phase("Scoring all my photos")
     n = score_all(prog)
@@ -372,7 +398,15 @@ def quality():
         msg, level = "Model quality is good. More ratings still help.", "good"
     else:
         msg, level = "Model quality is very good.", "very good"
-    return {"ratings": nr, "pairs": npairs, "spearman": sp, "message": msg, "level": level,
+    b = (m or {}).get("beauty")
+    if b and b.get("with") is not None and b.get("without") is not None:
+        b = dict(b, message=(f"General attractiveness model: used. Spearman {b['with']:.2f} with it, {b['without']:.2f} without it."
+                             if b["used"] else
+                             f"General attractiveness model: not used, because it does not improve your model "
+                             f"(Spearman {b['with']:.2f} with it, {b['without']:.2f} without it)."))
+    elif m is not None:
+        b = {"used": False, "message": "General attractiveness model: not used yet. It is tested when you have 10 or more ratings."}
+    return {"ratings": nr, "pairs": npairs, "spearman": sp, "message": msg, "level": level, "beauty": b,
             "trained": bool(m), "library": db.val("SELECT COUNT(*) FROM scores", default=0)}
 
 

@@ -46,6 +46,7 @@ def main():
         cfg = uvicorn.Config(server.app, host=host, port=port, log_level="warning", access_log=False)
         srv = uvicorn.Server(cfg)
         server.RESTART["requested"] = False
+        server.RUNTIME["port"] = port
         server.RESTART["callback"] = lambda: setattr(srv, "should_exit", True)
         log.info("Rated Gallery on http://127.0.0.1:%d  (LAN access: %s)", port, "ON" if s["lan_enabled"] else "off")
         if first and not args.no_browser:

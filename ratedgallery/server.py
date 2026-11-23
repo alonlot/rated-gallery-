@@ -31,6 +31,7 @@ async def _lifespan(_app):
 app = FastAPI(title="Rated Gallery", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=2000)
 RESTART = {"requested": False, "callback": None}
+RUNTIME = {"port": None}  # the port the server really listens on (--port can differ from the setting)
 
 PUBLIC = {"/login", "/api/login", "/api/device/pair", "/static/style.css", "/favicon.ico"}
 
@@ -60,6 +61,8 @@ def _startup():
     register_tasks()
     runner.start()
     db.conn()
+    if ranking.label_counts()[0] >= 8 and ranking.current_model()[1] is None:
+        runner.request("train")  # the saved model has an old feature layout: train again with the same ratings
     if not models.missing_models() and not os.environ.get("RG_NO_BENCHMARK"):
         runner.request("benchmark")  # every start: shows the real speed (photos per minute) on this PC
 
@@ -158,7 +161,7 @@ def lan_addresses():
 def status():
     s = config.settings()
     addrs = lan_addresses()
-    port = s["port"]
+    port = RUNTIME["port"] or s["port"]
     return {"version": __version__, "tasks": runner.status(), "stats": catalog.stats(),
             "models": models.DEVICES, "missing_models": models.missing_models(),
             "benchmark": db.kv_get("benchmark"), "settings": s.public(), "devices": devices.devices(),

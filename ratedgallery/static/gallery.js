@@ -196,7 +196,7 @@ export function createGallery(root, provider) {
     const minS = h('input', { type: 'range', min: 0, max: 10, step: 0.5, value: f.minScore, oninput: e => { f.minScore = +e.target.value; minLbl.textContent = f.minScore || 'any'; }, onchange: e => setF('minScore', +e.target.value) });
     const minLbl = h('b', {}, f.minScore || 'any');
     g.append(field('Minimum score: ', minLbl, minS));
-    g.append(field('Confidence', h('label', { class: 'chip' + (f.hideLowConf ? ' on' : ''), onclick: () => { setF('hideLowConf', !f.hideLowConf); buildFilters(); } }, 'Hide low-confidence scores')));
+    g.append(field('Confidence', h('div', { class: 'chips' }, h('span', { class: 'chip' + (f.hideLowConf ? ' on' : ''), onclick: () => { setF('hideLowConf', !f.hideLowConf); buildFilters(); } }, 'Hide low-confidence scores'))));
     g.append(field('Photos', h('div', { class: 'chips' },
       h('span', { class: 'chip' + (!f.includeNoMe ? ' on' : ''), onclick: () => { setF('includeNoMe', false); buildFilters(); } }, 'With me'),
       h('span', { class: 'chip' + (f.includeNoMe ? ' on' : ''), onclick: () => { setF('includeNoMe', true); buildFilters(); } }, 'All photos'))));
@@ -248,7 +248,7 @@ export function createGallery(root, provider) {
     list = applyFilters(index.photos, f, meId());
     const scored = list.filter(p => p.s !== null && p.s !== undefined).length;
     const m = index.model || {};
-    info.textContent = `${list.length} photos` + (scored ? `, ${scored} with my score` : '') +
+    info.textContent = `${list.length} ${list.length === 1 ? 'photo' : 'photos'}` + (scored ? `, ${scored} with my score` : '') +
       (m.trained ? ` · model from ${m.labels} ratings` : (index.photos.some(p => p.prior) ? ' · scores are estimates until you rate photos' : ''));
     const sum = filtersBox.querySelector('summary span'); if (sum) sum.textContent = activeCount() ? `(${activeCount()} on)` : '';
     if (mode === 'map') { grid.style.display = 'none'; mapBox.style.display = ''; renderMap(); }

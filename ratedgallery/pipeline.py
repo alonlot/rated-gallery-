@@ -396,6 +396,7 @@ def run_pass2(pool, prog: Progress, clip, iqa) -> int:
 
 def _flush_pass2(buf, clip, iqa):
     t0 = time.perf_counter()
+    beauty = beauty_scores([r["face_id"] for r in buf])
     ef = clip.embed([r["clip_face"] for r in buf])
     eF = clip.embed([r["clip_full"] for r in buf])
     q = iqa.score([r["iqa_in"] for r in buf])
@@ -407,6 +408,8 @@ def _flush_pass2(buf, clip, iqa):
             f = dict(r["features"])
             f.update(det=face[0], emb_norm=face[1], me_sim=face[2] if face[2] is not None else 1.0, iqa=q[k],
                      facing=ph[0])
+            if beauty[k] is not None:
+                f["beauty"] = beauty[k]
             c.execute("""INSERT INTO features(face_id,photo_id,data,clip_face,clip_full,iqa,version,updated)
                          VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(face_id) DO UPDATE SET data=excluded.data,
                          clip_face=excluded.clip_face, clip_full=excluded.clip_full, iqa=excluded.iqa,
@@ -417,6 +420,50 @@ def _flush_pass2(buf, clip, iqa):
                 c.execute("INSERT OR REPLACE INTO previews(photo_id,path,bytes,used) VALUES(?,?,?,?)",
                           (r["photo_id"], str(preview_path(r["photo_id"])), r["preview_bytes"], db.now()))
     return len(buf)
+
+
+def beauty_scores(face_ids):
+    """General attractiveness model on the cached 256 px face crops. None where not possible."""
+    from .models import Beauty, missing_models
+
+    if "beauty" in missing_models():
+        return [None] * len(face_ids)
+    crops, idx = [], []
+    for i, fid in enumerate(face_ids):
+        p = face_crop_path(fid)
+        if p.exists():
+            crops.append(np.asarray(Image.open(p).convert("RGB").resize((256, 256)), dtype=np.uint8))
+            idx.append(i)
+    out = [None] * len(face_ids)
+    if crops:
+        for i, v in zip(idx, Beauty().score(crops)):
+            out[i] = v
+    return out
+
+
+def backfill_beauty(prog: Progress | None = None) -> int:
+    """Add the attractiveness value to features computed before this model existed (no re-read of photos)."""
+    rows = db.q("SELECT face_id, data FROM features WHERE json_extract(data, '$.beauty') IS NULL")
+    if not rows:
+        return 0
+    if prog:
+        prog.set_phase("Adding the attractiveness model to analyzed photos", len(rows))
+    n = 0
+    for i in range(0, len(rows), 64):
+        chunk = rows[i:i + 64]
+        vals = beauty_scores([r[0] for r in chunk])
+        upd = []
+        for (fid, data), v in zip(chunk, vals):
+            if v is not None:
+                d = json.loads(data)
+                d["beauty"] = v
+                upd.append((json.dumps(d), fid))
+        with db.tx() as c:
+            c.executemany("UPDATE features SET data=? WHERE face_id=?", upd)
+        n += len(upd)
+        if prog:
+            prog.step(len(chunk))
+    return n
 
 
 def enforce_preview_cap():
@@ -513,6 +560,7 @@ def scan_job(prog: Progress, list_sources: bool = True):
         prog.set_phase("Grouping faces")
         people.cluster(prog)
     infer_facing()
+    backfill_beauty(prog)
     prog.set_phase("Scoring")
     ranking.score_all(prog)
     prog.message = f"{new_photos} new photos, {len(new_faces)} new faces"

@@ -30,6 +30,35 @@ DOWNLOADS = [
 FROM_ZIP = {"det_10g.onnx": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
             "w600k_r50.onnx": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"}
 TOPIQ_WEIGHTS_SHA = "9a73138beb3748dd6a83365610ac88fa1cd53225342c77fc9ed44a3be461354c"
+# SCUT-FBP5500 ResNet-18 (official weights, Python 3 copy). Non-commercial research terms of SCUT-FBP5500.
+BEAUTY_URL = "https://huggingface.co/Gustrd/SCUT-FBP5500-PyTorch-Model/resolve/main/resnet18_py3.pth"
+BEAUTY_SHA = "00d406a1d9bfb665ac760f260178b20034a0e4c954e01b19fc502012d486c8a4"
+
+BEAUTY_SCRIPT = r'''
+import re, sys
+import numpy as np, torch, torchvision
+# weights_only loading: no code from the file runs; only these NumPy data classes are allowed
+allowed = [(np._core.multiarray.scalar, "numpy.core.multiarray.scalar"), np.dtype, np.dtypes.Float64DType, np.dtypes.Float32DType]
+with torch.serialization.safe_globals(allowed):
+    ck = torch.load(sys.argv[1], map_location="cpu", weights_only=True)
+sd = {}
+for k, v in ck.get("state_dict", ck).items():
+    k = re.sub(r"^group1\.", "", k.replace("module.", ""))
+    k = re.sub(r"(layer\d\.\d+)\.group1\.", r"\1.", k)
+    sd[k.replace("group2.fullyconnected", "fc")] = v
+m = torchvision.models.resnet18(num_classes=1)
+m.load_state_dict(sd, strict=True)
+m.eval()
+x = torch.rand(1, 3, 224, 224)
+with torch.no_grad(): ref = m(x)
+torch.onnx.export(m, x, sys.argv[2], input_names=["image"], output_names=["beauty"], opset_version=17,
+                  dynamic_axes={"image": {0: "batch"}, "beauty": {0: "batch"}}, dynamo=False)
+import onnxruntime as ort
+out = ort.InferenceSession(sys.argv[2], providers=["CPUExecutionProvider"]).run(None, {"image": x.numpy()})[0]
+d = float(np.abs(out - ref.numpy()).max())
+print("Beauty model export check: max difference", d)
+sys.exit(0 if d < 1e-3 else 3)
+'''
 
 EXPORT_SCRIPT = r'''
 import sys, torch, pyiqa
@@ -83,12 +112,15 @@ def download(url: str, dst: Path, expect: str):
     tmp.replace(dst)
 
 
-def export_topiq(models: Path):
-    out = models / "topiq_nr.onnx"
-    if out.exists():
-        print("  ok      topiq_nr.onnx")
+def export_with_torch(models: Path):
+    """Export TOPIQ-NR and the SCUT-FBP5500 model to ONNX in a temporary CPU PyTorch environment."""
+    need_iqa = not (models / "topiq_nr.onnx").exists()
+    need_beauty = not (models / "beauty_scut.onnx").exists()
+    if not need_iqa and not need_beauty:
+        print("  ok      topiq_nr.onnx, beauty_scut.onnx")
         return
-    print("  export  topiq_nr.onnx (temporary CPU PyTorch environment, a few minutes)")
+    print("  export  " + ", ".join(n for n, f in (("topiq_nr.onnx", need_iqa), ("beauty_scut.onnx", need_beauty)) if f)
+          + " (temporary CPU PyTorch environment, a few minutes)")
     tmpdir = Path(tempfile.mkdtemp(prefix="rg-export-"))
     try:
         venv = tmpdir / "venv"
@@ -97,17 +129,24 @@ def export_topiq(models: Path):
         pip = [str(py), "-m", "pip", "install", "-q", "--disable-pip-version-check"]
         subprocess.check_call(pip + ["torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cpu"])
         subprocess.check_call(pip + ["pyiqa", "onnx", "onnxruntime"])
-        script = tmpdir / "export.py"
-        script.write_text(EXPORT_SCRIPT)
-        env_home = tmpdir / "torch_home"
         import os
 
-        env = dict(os.environ, TORCH_HOME=str(env_home))
-        subprocess.check_call([str(py), str(script), str(out)], env=env)
-        weights = list(env_home.rglob("cfanet_nr_koniq_res50*.pth"))
-        if weights and sha256(weights[0]) != TOPIQ_WEIGHTS_SHA:
-            out.unlink(missing_ok=True)
-            sys.exit("TOPIQ weights checksum mismatch")
+        env = dict(os.environ, TORCH_HOME=str(tmpdir / "torch_home"))
+        if need_iqa:
+            script = tmpdir / "export_iqa.py"
+            script.write_text(EXPORT_SCRIPT)
+            subprocess.check_call([str(py), "-I", str(script), str(models / "topiq_nr.onnx")], env=env)
+            weights = list((tmpdir / "torch_home").rglob("cfanet_nr_koniq_res50*.pth"))
+            if weights and sha256(weights[0]) != TOPIQ_WEIGHTS_SHA:
+                (models / "topiq_nr.onnx").unlink(missing_ok=True)
+                sys.exit("TOPIQ weights checksum mismatch")
+        if need_beauty:
+            pth = tmpdir / "beauty" / "resnet18_py3.pth"
+            pth.parent.mkdir()
+            download(BEAUTY_URL, pth, BEAUTY_SHA)
+            script = tmpdir / "export_beauty.py"
+            script.write_text(BEAUTY_SCRIPT)
+            subprocess.check_call([str(py), "-I", str(script), str(pth), str(models / "beauty_scut.onnx")], env=env)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -132,7 +171,7 @@ def main():
                     sys.exit(f"Checksum mismatch for {name}")
                 print(f"  ok      {name}")
         (models / "buffalo_l.zip").unlink()
-    export_topiq(models)
+    export_with_torch(models)
     print("All models are ready. The app runs offline from now on.")
 
 

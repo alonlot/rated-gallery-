@@ -137,6 +137,7 @@ def test_features_for_my_photos(env):
     assert n_feat == n_me
     feats = [json.loads(r[0]) for r in db.q("SELECT data FROM features")]
     assert sum(f["mp_ok"] for f in feats) / len(feats) > 0.7, "MediaPipe must find most faces"
+    assert all(1.0 <= f["beauty"] <= 5.0 for f in feats), "attractiveness model output must be on its 1..5 scale"
     # photos without me get no features (expensive models run only on my photos)
     assert db.val("SELECT COUNT(*) FROM features f JOIN photos p ON p.id=f.photo_id WHERE p.me_face IS NULL") == 0
     # blurred photo is less sharp than the original
@@ -183,6 +184,11 @@ def test_calibration_and_training(env):
     m = c.get("/api/model").json()
     assert m["ratings"] >= 25 and m["trained"]
     assert m["spearman"] is not None and m["spearman"] > 0.5, m
+    b = m["beauty"]  # the attractiveness model is compared with and without, on the same folds
+    assert b["with"] is not None and b["without"] is not None and isinstance(b["used"], bool) and b["message"]
+    from ratedgallery import ranking
+    _, model = ranking.current_model()
+    assert (model["w"][ranking.BEAUTY_COL] != 0) == b["used"]
     # the trained model ranks unrated photos well too
     from scipy.stats import spearmanr
 
