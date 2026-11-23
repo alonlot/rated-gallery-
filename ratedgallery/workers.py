@@ -61,7 +61,7 @@ def scan_task(job: dict) -> dict:
         im, info = imaging.decode(data, 1280)
         ex = metadata.parse_exif(info["exif"])
         side = metadata.read_sidecar(job.get("sidecar"))
-        meta = metadata.merge(ex, side, job.get("taken_hint"))
+        meta = metadata.merge(ex, side, job.get("taken_hint"), job.get("name"))
         rel = thumb_rel(sha)
         tp = config.cache_dir("thumbs") / rel
         if not tp.exists():

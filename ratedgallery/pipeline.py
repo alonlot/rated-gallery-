@@ -139,6 +139,7 @@ class HashIndex:
         self.aspect = [((r[2] or 1) / (r[3] or 1)) for r in rows]
         self.ts = [r[4] for r in rows]
         self.burst = [r[5] for r in rows]
+        self.pos = {pid: i for i, pid in enumerate(self.ids)}
 
     def dist(self, hexh: str):
         if not self.ids:
@@ -152,6 +153,13 @@ class HashIndex:
         self.aspect.append(w / max(h, 1))
         self.ts.append(ts)
         self.burst.append(burst)
+        self.pos[pid] = len(self.ids) - 1
+
+    def fill_ts(self, pid, ts):
+        """A merged copy gave the photo its capture time: later files must be compared with that time."""
+        i = self.pos.get(pid)
+        if ts is not None and i is not None and self.ts[i] is None:
+            self.ts[i] = ts
 
 
 # ---------------------------------------------------------------- pass 1
@@ -186,7 +194,8 @@ def run_pass1(rows, pool, prog: Progress, det, arc, hidx: HashIndex, new_faces: 
         if p is None:
             db.ex("UPDATE files SET status=CASE WHEN status='uploaded' THEN 'new' ELSE status END, attempts=attempts+1 WHERE id=?", (r["id"],))
             continue
-        jobs.append({"file_id": r["id"], "path": str(p), "sidecar": r["sidecar"], "taken_hint": r["taken_hint"]})
+        jobs.append({"file_id": r["id"], "path": str(p), "sidecar": r["sidecar"], "taken_hint": r["taken_hint"],
+                     "name": r["name"]})
     c = db.conn()
     pending_commit = 0
     c.execute("BEGIN IMMEDIATE")
@@ -238,6 +247,7 @@ def _handle_scan(c, res, det, arc, hidx: HashIndex, near, burst_bits, burst_s, n
                 break
     if target is not None:
         _merge_duplicate(c, target, fid, res, meta)
+        hidx.fill_ts(target, meta.get("taken_ts"))
         c.execute("UPDATE files SET status='done', photo_id=? WHERE id=?", (target, fid))
         return
     # burst group: similar photo taken a few seconds apart

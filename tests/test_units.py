@@ -221,3 +221,34 @@ def test_arcface_runs_on_directml_with_fixed_batch():
         pytest.skip("models missing")
     res = models._run_probe("arcface", {"input.1": [8, 3, 112, 112]}, {"None": 8})
     assert res["ok"], res
+
+
+def test_capture_time_from_file_name():
+    from datetime import datetime
+
+    assert metadata.time_from_name("IMG_20230310_150000.jpg") == datetime(2023, 3, 10, 15, 0, 0)
+    assert metadata.time_from_name("IMG_20230310_150000_me_0_orig(1).jpg") == datetime(2023, 3, 10, 15, 0, 0)
+    assert metadata.time_from_name("PXL_20240707_190000123.jpg") == datetime(2024, 7, 7, 19, 0, 0)
+    assert metadata.time_from_name("Screenshot_20230310-150000.png") == datetime(2023, 3, 10, 15, 0, 0)
+    assert metadata.time_from_name("20230310_150000.jpg") == datetime(2023, 3, 10, 15, 0, 0)
+    for bad in ("IMG_1234.jpg", "IMG_20231310_150000.jpg", "IMG_18000101_000000.jpg", "123420230310150000.jpg", None):
+        assert metadata.time_from_name(bad) is None, bad
+    # file name time only when nothing better exists
+    m = metadata.merge({}, {}, None, "IMG_20230310_150000.jpg")
+    assert m["taken_local"] == "2023-03-10T15:00:00"
+    assert metadata.merge({}, {"taken_ts": 1_000_000_000.0}, None, "IMG_20230310_150000.jpg")["taken_ts"] == 1_000_000_000.0
+    assert metadata.merge({}, {}, 1_600_000_000.0, "IMG_20230310_150000.jpg")["taken_ts"] == 1_600_000_000.0
+
+
+def test_hash_index_takes_capture_time_of_merged_copy(tmp_path):
+    """A photo without capture time gets one from a merged copy; later files are compared with that time."""
+    from ratedgallery import db
+    from ratedgallery.pipeline import HashIndex
+
+    db.set_path(tmp_path / "t.db")
+    h = HashIndex()
+    h.add(1, "f7ef6002393d184b", 600, 423, None, None)
+    h.fill_ts(1, 1678460400.0)
+    assert h.ts == [1678460400.0]
+    h.fill_ts(1, 1680778800.0)            # an existing time is not replaced
+    assert h.ts == [1678460400.0]
