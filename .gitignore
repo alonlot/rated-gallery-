@@ -1,0 +1,17 @@
+# Python
+.venv/
+.venv-export/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data: database, caches, downloaded models. Never commit.
+data/
+test_data/generated/
+
+# Android build output and signing keys
+phone-app/**/build/
+phone-app/.gradle/
+phone-app/local.properties
+*.jks
+*.keystore
