@@ -1,0 +1,10 @@
+# Signing secrets (release.jks is also covered by *.jks in the repo .gitignore)
+keystore/
+keystore.properties
+# Build output
+build/
+.gradle/
+local.properties
+.kotlin/
+# Copied at build time from ../ratedgallery/static
+app/src/main/assets/web/

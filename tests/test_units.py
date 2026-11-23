@@ -1,0 +1,136 @@
+"""Fast tests without models."""
+import json
+import socket
+from datetime import datetime
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from ratedgallery import metadata, ranking
+from ratedgallery.pipeline import same_capture_time
+
+
+def test_media_key_variants():
+    assert metadata.media_key("IMG_1.JPG") == ("img_1.jpg", 0)
+    assert metadata.media_key("IMG_1(2).JPG") == ("img_1.jpg", 2)
+    assert metadata.media_key("IMG_1-edited.JPG") == ("img_1.jpg", 0)
+    assert metadata.media_key("IMG_1-edited(1).jpg") == ("img_1.jpg", 1)
+
+
+def _side(d, name, title, ts=1700000000, lat=0.0, lon=0.0):
+    (d / name).write_text(json.dumps({"title": title, "photoTakenTime": {"timestamp": str(ts)},
+                                       "geoData": {"latitude": lat, "longitude": lon}}))
+
+
+def test_sidecar_matching(tmp_path):
+    _side(tmp_path, "a.jpg.json", "a.jpg", 1)
+    _side(tmp_path, "b.jpg.supplemental-metadata.json", "b.jpg", 2)
+    _side(tmp_path, "c.jpg(1).json", "c.jpg", 3)
+    _side(tmp_path, "c.jpg.json", "c.jpg", 4)
+    long = "IMG_20240505_101010_with_a_very_long_file_name_me_1.jpg"
+    _side(tmp_path, long[:46] + ".json", long, 5)
+    _side(tmp_path, "d.jpg.supplemental-metad.json", "d.jpg", 6)
+    (tmp_path / "metadata.json").write_text(json.dumps({"title": "Album"}))
+    idx = metadata.index_sidecars(list(tmp_path.glob("*.json")))
+
+    def ts(name):
+        return metadata.read_sidecar(metadata.match_sidecar(name, idx)).get("taken_ts")
+
+    assert ts("a.jpg") == 1
+    assert ts("b.jpg") == 2
+    assert ts("c(1).jpg") == 3
+    assert ts("c.jpg") == 4
+    assert ts("a-edited.jpg") == 1
+    assert ts(long) == 5
+    assert ts("d.jpg") == 6
+    assert metadata.match_sidecar("zzz.jpg", idx) is None
+
+
+def test_sidecar_zero_gps_is_no_gps(tmp_path):
+    _side(tmp_path, "a.jpg.json", "a.jpg", 10, 0.0, 0.0)
+    assert "lat" not in metadata.read_sidecar(str(tmp_path / "a.jpg.json"))
+    _side(tmp_path, "b.jpg.json", "b.jpg", 10, 41.9, 12.5)
+    assert metadata.read_sidecar(str(tmp_path / "b.jpg.json"))["lat"] == 41.9
+
+
+def test_exif_and_merge_priority(tmp_path):
+    ex = Image.Exif()
+    ex[271], ex[272] = "Google", "Pixel 7"
+    ex[0x8769] = {36867: "2024:05:03 14:22:10", 42036: "Pixel 7 front camera 2.2mm f/2.2"}
+    ex[0x8825] = {1: "N", 2: (10.0, 30.0, 0.0), 3: "W", 4: (20.0, 0.0, 0.0)}
+    Image.new("RGB", (32, 32)).save(tmp_path / "x.jpg", exif=ex.tobytes())
+    info = metadata.parse_exif(Image.open(tmp_path / "x.jpg").getexif())
+    assert info["lat"] == pytest.approx(10.5) and info["lon"] == pytest.approx(-20.0)
+    m = metadata.merge(info, {})
+    assert m["facing"] == "front" and m["taken_local"] == "2024-05-03T14:22:10"
+    m2 = metadata.merge(info, {"taken_ts": 1000.0, "lat": 1.0, "lon": 2.0})
+    assert m2["taken_ts"] == 1000.0 and m2["lat"] == 1.0        # sidecar first
+    assert m2["taken_local"] == "2024-05-03T14:22:10"           # local time of day from EXIF
+
+
+def test_facing_from_lens():
+    assert metadata.facing_from_lens("iPhone 12 front camera 2.71mm f/2.2") == "front"
+    assert metadata.facing_from_lens("iPhone 12 back dual wide camera 4.2mm f/1.6") == "rear"
+    assert metadata.facing_from_lens(None) == "unknown"
+
+
+def test_same_capture_time():
+    assert same_capture_time(1000.0, 1000.4)            # copy
+    assert not same_capture_time(1000.0, 1001.0)        # burst shot 1 s later
+    assert same_capture_time(1000.0, 1000.0 + 3 * 3600)  # time zone difference between sources
+    assert not same_capture_time(1000.0, 1000.0 + 86400)
+    assert same_capture_time(None, 5.0)
+
+
+def test_offline_guard_blocks_internet():
+    from ratedgallery import offline
+
+    offline.enable()
+    s = socket.socket()
+    with pytest.raises(ConnectionRefusedError):
+        s.connect(("8.8.8.8", 53))
+    s.close()
+    # loopback stays allowed (the connection itself may be refused, but not by the guard)
+    s = socket.socket()
+    s.settimeout(0.5)
+    try:
+        s.connect(("127.0.0.1", 9))
+    except ConnectionRefusedError as e:
+        assert "offline guard" not in str(e)
+    except OSError:
+        pass
+    s.close()
+
+
+def test_solve_pairs_only_and_mapping():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 4))
+    true = X @ np.array([1.0, -0.5, 0, 0])
+    pairs = []
+    for _ in range(80):
+        a, b = rng.choice(60, 2, replace=False)
+        pairs.append((a, b, 1 if true[a] > true[b] else -1))
+    w, _ = ranking._solve(X, np.array([]), np.array([], dtype=int), pairs, 1.0)
+    assert np.corrcoef(X @ w, true)[0, 1] > 0.9
+    m = {"raw_sorted": np.sort(true), "ratings_sorted": np.array([3, 5, 5, 6, 7, 7, 7, 8, 9])}
+    s = ranking.to_score(m, np.sort(true))
+    assert np.all(np.diff(s) >= -1e-9)              # monotonic
+    assert len(np.unique(np.round(s, 3))) > 30       # continuous, no plateaus
+    assert 1 <= s.min() and s.max() <= 10
+
+
+def test_password_hash():
+    from ratedgallery import auth
+
+    h = auth.hash_password("secret123")
+    assert auth.check_password("secret123", h) and not auth.check_password("nope", h)
+
+
+def test_confidence_low_for_small_blurred_turned_faces():
+    good = {"face_w": 0.2, "sharp": 5.0, "yaw": 5.0, "det": 0.85, "mp_ok": 1.0}
+    q = ranking.quality_conf
+    assert q(good) > 0.9
+    assert q({**good, "face_w": 0.03}) < 0.5 * q(good)
+    assert q({**good, "sharp": 1.5}) < 0.5 * q(good)
+    assert q({**good, "yaw": 70.0}) < 0.5 * q(good)

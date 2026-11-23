@@ -1,4 +1,4 @@
-# Plan (draft, waiting for approval of the phone-app change)
+# Plan (approved)
 
 ## Decisions so far
 - Sources: phone (through the companion Android app) plus Google Takeout. Cross-source dedupe.
@@ -14,7 +14,7 @@
 - Pass 2 (photos of me only): face crop at full resolution, MediaPipe, sharpness, exposure, CLIP, IQA.
 - Runtime guard blocks outbound connections from Python except LAN and loopback.
 
-## Phone app (proposed)
+## Phone app
 - Native Android app. Pairing by QR code. Phone is always the client.
 - Sync: manifest -> PC asks for unknown photos -> phone uploads -> PC analyzes in memory, deletes temp copy -> PC sends result database back.
 - Offline: gallery of on-device photos with the last synced ratings and the same filters. No new ratings offline.
@@ -38,3 +38,7 @@
 5. Gallery, filters, export
 6. LAN access, mobile UI
 7. Android app
+
+## Status
+All 7 milestones are built. Tests: pytest (unit + end-to-end on CPU, synthetic data) and the Android JVM unit tests.
+Not tested here: DirectML (no AMD GPU in the build container) and the phone app on a real phone (no emulator).

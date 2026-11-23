@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Rated Gallery</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<div id="app">
+  <nav id="nav">
+    <div class="brand">Rated Gallery</div>
+    <a href="#/library" data-r="library">Library</a>
+    <a href="#/people" data-r="people">Me &amp; People</a>
+    <a href="#/calibrate" data-r="calibrate">Calibrate</a>
+    <a href="#/gallery" data-r="gallery">Gallery</a>
+    <a href="#/settings" data-r="settings">Settings</a>
+  </nav>
+  <main id="view"></main>
+</div>
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
