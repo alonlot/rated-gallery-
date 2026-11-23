@@ -91,26 +91,28 @@ photos on the PC. Give the PC a fixed IP address in your router. If the IP addre
 | Disk | About 3 GB for the app and models, plus about 0.1 GB per 1,000 photos, plus the 1 GB preview cache |
 | Phone | Android 10 or newer (target: Poco F6) |
 
-At start, each model is tried on DirectML. If DirectML fails for a model, that model runs on the CPU.
-**Library > Speed on this PC** shows the device of each model and the measured speed in photos per minute.
+At the first start, each model is checked on DirectML in a separate process, with the fixed input sizes the app uses
+(result saved in `data\models\dml_probe.json`). If DirectML fails for a model, that model runs on the CPU.
+A failed check can no longer break DirectML for the other models.
+**Library > Speed on this PC** shows the device of each model and an estimate in photos per minute.
+The estimate is too high: on the RX 6600 XT it shows about 3,500 per minute for the scan; the measured speed is 1,500.
 
 ## Expected scan time per 10,000 photos
 
-**These numbers for your PC are estimates, not measurements.** I could not run the app on your PC.
-The benchmark in the app gives the real number after the first start.
+Measured on a Ryzen 5 5600X + RX 6600 XT (all models on DirectML, 5 workers), with 600 synthetic 12 MP JPEGs
+(4032 x 3024, about 1.1 MB each) on an SSD: **about 1,500 photos per minute** for the scan (decode, metadata,
+thumbnail, faces), plus about 4,200 per minute to make the photos searchable, and **about 850 photos per minute** for the
+analysis of photos of you. Real phone JPEGs are larger (3 to 5 MB), so expect a little less.
 
 Measured in the development container (4 virtual CPU cores, no GPU, all models on the CPU, 3 workers):
 195 photos per minute for the scan and 116 per minute for the analysis of photos of you.
-That is about 51 minutes per 10,000 photos for the scan.
 
-Estimates for a Ryzen 5 5600X + RX 6600 XT:
-
-| Step | DirectML works | DirectML fails (CPU only) |
+| Step | Ryzen 5 5600X + RX 6600 XT (DirectML) | CPU only (estimate) |
 |---|---|---|
-| Scan, Takeout on SSD, mostly JPEG | 5 to 10 min | 25 to 40 min |
+| Scan, Takeout on SSD, mostly JPEG | about 9 min (measured rate) | 25 to 40 min |
 | Scan, many HEIC files (no reduced-size decoding for HEIC) | 10 to 20 min | 30 to 45 min |
 | Scan, phone over Wi-Fi (about 40 GB) | 20 to 45 min (limit: Wi-Fi) | 30 to 50 min |
-| Analysis of the photos of you (about 3,000 of 10,000) | 3 to 6 min | 15 to 25 min |
+| Analysis of the photos of you (about 3,000 of 10,000) | about 4 min (measured rate) | 15 to 25 min |
 | Retrain and score all photos | under 10 s | under 10 s |
 
 Low priority mode uses half of the workers at idle priority and pauses between GPU batches. Scans then take
@@ -157,7 +159,8 @@ Phone app: AndroidX (Apache 2.0), OkHttp (Apache 2.0).
 
 ## Known limits
 
-- I tested the DirectML path and the phone app only by build and unit tests. I could not run them on your PC or phone.
+- The DirectML path is tested on the RX 6600 XT (Windows 11, onnxruntime-directml 1.24.4). The phone app is tested only by
+  build and unit tests, not on a real phone.
 - Front or rear camera comes from the EXIF lens field. Many Android photos do not have it. Then the app copies the
   value from other photos of the same phone with the same focal length, or shows "unknown".
 - Place names are the nearest town in GeoNames (towns with 1,000 or more people), not street names.
