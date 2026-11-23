@@ -48,6 +48,8 @@ export function phoneProvider() {
     downloadLabel: 'Share',
     search: async q => {
       if (!B.search) return { ok: false, reason: 'Update the phone app to use search.' };
+      // The bridge call blocks while the model loads the first time: let "Searching…" show first.
+      await new Promise(r => setTimeout(r, 50));
       try { return JSON.parse(B.search(q)); } catch (e) { return { ok: false, reason: String(e) }; }
     },
     status: () => { try { return JSON.parse(B.getStatus()); } catch (e) { return {}; } },

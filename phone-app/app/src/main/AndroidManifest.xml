@@ -27,6 +27,14 @@
         android:theme="@style/Theme.RatedGallery"
         tools:targetApi="35">
 
+        <!-- ONNX Runtime (text search) starts Microsoft telemetry (1DS over HTTPS) from this provider at
+             every app start. The app is offline by design: remove it. Without it the native library has no
+             HTTP client and sends nothing (it logs "Android telemetry is unavailable"). -->
+        <provider
+            android:name="ai.onnxruntime.TelemetryInitializer"
+            android:authorities="${applicationId}.onnxruntime_telemetry_initializer"
+            tools:node="remove" />
+
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"

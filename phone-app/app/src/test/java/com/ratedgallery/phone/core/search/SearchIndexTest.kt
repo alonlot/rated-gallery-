@@ -47,7 +47,7 @@ class SearchIndexTest {
         assertEquals(3, idx.dim)
         assertArrayEquals(longArrayOf(7, 1L shl 40), idx.ids)
         assertArrayEquals(floatArrayOf(1f, 0f, -1f, 0.5f, 0.5f, 0.5f), idx.vectors, 0f)
-        assertArrayEquals(floatArrayOf(-1f, 1.5f), idx.similarities(floatArrayOf(1f, 2f, 2f)), 1e-6f)
+        assertArrayEquals(floatArrayOf(-1f, 2.5f), idx.similarities(floatArrayOf(1f, 2f, 2f)), 1e-6f)
     }
 
     @Test fun rejectsBrokenFiles() {

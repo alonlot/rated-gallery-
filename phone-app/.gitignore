@@ -8,3 +8,5 @@ local.properties
 .kotlin/
 # Copied at build time from ../ratedgallery/static
 app/src/main/assets/web/
+# The APK is about 36 MB (ONNX Runtime). It is not stored in git; build it with build_apk.sh.
+dist/

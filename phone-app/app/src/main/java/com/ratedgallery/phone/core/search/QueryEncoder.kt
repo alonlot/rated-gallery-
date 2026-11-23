@@ -22,6 +22,12 @@ class OrtTextModel(modelFile: File, threads: Int = 4) : TextModel {
     private val session: OrtSession
 
     init {
+        // No telemetry (the app is offline by design; the Android telemetry provider is also removed in the manifest).
+        try {
+            env.setTelemetry(false)
+        } catch (e: Exception) {
+            // not supported on this platform
+        }
         val opts = OrtSession.SessionOptions()
         opts.setIntraOpNumThreads(threads)
         opts.setSessionLogLevel(ai.onnxruntime.OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR)

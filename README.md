@@ -32,7 +32,7 @@ Tests (synthetic data and public-domain portraits): `test.bat`
 
 1. On the PC: **Settings > Phone and LAN access**. Set a password and turn LAN access on.
    Windows asks to allow Python through the firewall. Allow it for **private** networks only.
-2. Copy `phone-app/dist/RatedGallery.apk` to the phone and open it. Android asks you to allow
+2. Copy the APK (`phone-app/dist/RatedGallery.apk` after `phone-app/build_apk.sh`, or the file I sent you) to the phone and open it. Android asks you to allow
    installation from this source.
 3. On the PC, push **Pair phone**. Scan the QR code with the phone camera, or type the address,
    port and 6-digit code in the app.

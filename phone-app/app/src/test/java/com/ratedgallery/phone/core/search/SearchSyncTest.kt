@@ -36,12 +36,12 @@ class SearchSyncTest {
     private val text = Random(1).nextBytes(300_000)
     private val dense = Random(2).nextBytes(1000)
     private val vocab = "[PAD]\nsun\n".toByteArray()
-    private val index = SearchIndex.encode(longArrayOf(1, 2), 512, FloatArray(1024) { 0.01f })
+    private val indexBytes = SearchIndex.encode(longArrayOf(1, 2), 512, FloatArray(1024) { 0.01f })
 
     private fun pc() = FakePc().apply {
         models["text"] = text; models["dense"] = dense; models["vocab"] = vocab
         search = SearchInfo(SearchFiles.VERSION, models.mapValues { sha256(it.value) })
-        searchIndex = index
+        searchIndex = indexBytes
     }
 
     private fun dirFiles() = files.dir.list()!!.toSortedSet()
@@ -55,7 +55,7 @@ class SearchSyncTest {
         assertArrayEquals(dense, files.model("dense").readBytes())
         assertEquals(sha256(text), files.storedSha("text"))
         assertTrue(files.modelsPresent())
-        assertArrayEquals(index, files.index.readBytes())
+        assertArrayEquals(indexBytes, files.index.readBytes())
         assertEquals(sortedSetOf("mclip_text_q8.onnx", "mclip_dense.f32", "mclip_vocab.txt", "models.properties", "search_index.bin"), dirFiles())
     }
 
@@ -127,9 +127,9 @@ class SearchSyncTest {
     @Test fun brokenSearchIndexKeepsOld() {
         val pc = pc()
         SearchSync(pc, files).syncIndex()
-        pc.searchIndex = index.copyOf(index.size - 3)
+        pc.searchIndex = indexBytes.copyOf(indexBytes.size - 3)
         try { SearchSync(pc, files).syncIndex(); fail() } catch (e: IOException) { /* expected */ }
-        assertArrayEquals(index, files.index.readBytes())
+        assertArrayEquals(indexBytes, files.index.readBytes())
     }
 
     @Test fun unknownVersionIsRefused() {
@@ -208,7 +208,7 @@ class SearchSyncTest {
                         """{"ok":true,"server_version":"1.0","server_name":"PC","device_id":3,
                            "search":{"version":"mclip-b32-v1","files":{"text":"${shas["text"]}","dense":"${shas["dense"]}","vocab":"${shas["vocab"]}"}}}""",
                     )
-                    path == "/api/device/search-index" -> MockResponse().setBody(Buffer().write(index))
+                    path == "/api/device/search-index" -> MockResponse().setBody(Buffer().write(indexBytes))
                     path.startsWith("/api/device/model/") -> {
                         val name = path.substringAfterLast('/')
                         modelHits += name
@@ -226,7 +226,7 @@ class SearchSyncTest {
             assertEquals(SearchInfo("mclip-b32-v1", shas), ping.search)
             val s = SearchSync(api, files)
             s.syncIndex()
-            assertArrayEquals(index, files.index.readBytes())
+            assertArrayEquals(indexBytes, files.index.readBytes())
             try { s.syncModels(ping.search!!); fail() } catch (e: ShaMismatchException) { /* dense header wrong */ }
             assertArrayEquals(text, files.model("text").readBytes())
             assertFalse(files.model("dense").exists())

@@ -103,13 +103,15 @@ class SearchEngineTest {
         assertEquals(1, loaded.size)
 
         // A new index file is picked up; the model stays loaded.
-        writeIndex(longArrayOf(9, 10, 11), listOf(unit(101, 102, 103, 104), unit(101, 102, 103), unit(103)))
+        val near = FloatArray(512).also { v -> listOf(101, 102, 103).forEach { v[it] = 1f }; v[104] = 0.3f }
+        val nn = sqrt(near.sumOf { (it * it).toDouble() }).toFloat()
+        writeIndex(longArrayOf(9, 10, 11), listOf(FloatArray(512) { near[it] / nn }, unit(101, 102, 103), unit(103)))
         e.invalidateIndex()
         val r2 = JSONObject(e.searchJson("sun")).getJSONArray("results")
         assertEquals(2, r2.length())
         assertEquals(10L, r2.getJSONArray(0).getLong(0))
         assertEquals(9L, r2.getJSONArray(1).getLong(0))
-        assertEquals(0.866, r2.getJSONArray(1).getDouble(1), 1e-3)
+        assertEquals(0.985, r2.getJSONArray(1).getDouble(1), 1e-3) // 3 / (sqrt(3) * sqrt(3.09))
         assertEquals(1, loaded.size)
 
         // A new model file (new sha) reloads the model and closes the old session.
@@ -131,7 +133,7 @@ class SearchEngineTest {
             SearchEngine.toJson(SearchEngine.Result.Ok(listOf(12L to 0.31234f, 3L to -0.00009f))),
         )
         val o = JSONObject(SearchEngine.toJson(SearchEngine.Result.NotReady("x \"y\"")))
-        assertEquals(setOf("ok", "reason"), o.keySet())
+        assertEquals(setOf("ok", "reason"), o.keys().asSequence().toSet())
         assertEquals("x \"y\"", o.getString("reason"))
     }
 }
