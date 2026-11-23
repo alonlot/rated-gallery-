@@ -45,8 +45,10 @@ def build_index(device_source: int | None = None) -> dict:
         for pid, rel in db.q("SELECT photo_id, rel FROM files WHERE source_id=? AND status='done' AND photo_id IS NOT NULL",
                              (device_source,)):
             mids[pid] = rel
-    rows = db.q(f"""SELECT p.*, s.score, s.conf, s.prior, s.contrib, s.score_p, src.kind AS src_kind
+    rows = db.q(f"""SELECT p.*, s.score, s.conf, s.prior, s.contrib, s.score_p, src.kind AS src_kind,
+                    json_extract(fe.data, '$.beauty') AS beauty
                     FROM photos p LEFT JOIN scores s ON s.face_id=p.me_face
+                    LEFT JOIN features fe ON fe.face_id=p.me_face
                     LEFT JOIN files bf ON bf.id=p.best_file LEFT JOIN sources src ON src.id=bf.source_id
                     WHERE {where}""", args)
     pmap: dict[int, list] = {}
@@ -57,6 +59,8 @@ def build_index(device_source: int | None = None) -> dict:
     if device_source is not None:
         for r in db.q("SELECT f.id, f.x1, f.y1, f.x2, f.y2 FROM faces f JOIN photos p ON p.me_face=f.id"):
             boxes[r[0]] = [round(r[1], 4), round(r[2], 4), round(r[3], 4), round(r[4], 4)]
+    bvals = [r["beauty"] for r in rows if r["me_face"] is not None and r["beauty"] is not None]
+    bmean = sum(bvals) / len(bvals) if bvals else None
     photos = []
     for r in rows:
         if device_source is not None and r["id"] not in mids:
@@ -68,7 +72,10 @@ def build_index(device_source: int | None = None) -> dict:
              "s": round(r["score"], 2) if r["score"] is not None else None,
              "sp": round(r["score_p"], 2) if r["score_p"] is not None else None,
              "c": round(r["conf"], 2) if r["conf"] is not None else None, "prior": bool(r["prior"]),
-             "r": ratings.get(r["me_face"]) if has_me else None, "p": sorted(pmap.get(r["id"], [])),
+             "r": ratings.get(r["me_face"]) if has_me else None,
+             # general attractiveness model, 1..10, and the difference from my own average (display only)
+             "a": round(r["beauty"], 1) if has_me and r["beauty"] is not None else None,
+             "ad": round(r["beauty"] - bmean, 1) if has_me and r["beauty"] is not None and bmean is not None else None, "p": sorted(pmap.get(r["id"], [])),
              "w": r["width"], "h": r["height"], "src": "phone" if r["src_kind"] == "device" else "folder", "b": r["burst"]}
         if device_source is not None:
             d["mid"] = mids[r["id"]]

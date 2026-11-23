@@ -132,6 +132,7 @@ export function applyFilters(photos, f, meId) {
   if (f.sort === 'score') out.sort((a, b) => sNull(b[sk]) - sNull(a[sk]) || (b.t || '').localeCompare(a.t || ''));
   else if (f.sort === 'date') out.sort((a, b) => (b.t || '').localeCompare(a.t || ''));
   else if (f.sort === 'date_asc') out.sort((a, b) => (a.t || '9').localeCompare(b.t || '9'));
+  else if (f.sort === 'attr') out.sort((a, b) => sNull(b.a) - sNull(a.a) || sNull(b[sk]) - sNull(a[sk]));
   return out;
 }
 
@@ -211,7 +212,8 @@ export function createGallery(root, provider) {
         h('button', { class: mode === m ? 'on' : '', onclick: () => { mode = m; buildChips(); refresh(); } }, l)));
     chipRow.append(seg);
     const sort = h('select', { class: 'chipselect', 'aria-label': 'Sort', onchange: e => setF('sort', e.target.value) },
-      h('option', { value: 'score' }, 'Best first'), h('option', { value: 'date' }, 'Newest'), h('option', { value: 'date_asc' }, 'Oldest'));
+      h('option', { value: 'score' }, 'Best first'), h('option', { value: 'date' }, 'Newest'), h('option', { value: 'date_asc' }, 'Oldest'),
+      h('option', { value: 'attr' }, 'Attractiveness'));
     sort.value = f.sort;
     if (!searchRes && mode === 'photos') chipRow.append(sort);
     chipRow.append(
@@ -496,6 +498,12 @@ export function createGallery(root, provider) {
         side.append(h('div', { class: 'bigscore' }, main !== null && main !== undefined ? (p.prior ? '~' : '') + main.toFixed(1) : '–',
           h('span', {}, f.scoreMode === 'period' ? 'my score in this period' : 'my score')),
           h('div', { class: 'small muted' }, f.scoreMode === 'period' ? `All time: ${fmt(all)}` : `Compared with the same years: ${fmt(per)}`));
+        if (p.a !== null && p.a !== undefined) {
+          const d = p.ad ?? 0;
+          side.append(h('div', { class: 'attr' }, h('b', {}, `General attractiveness ${p.a.toFixed(1)}/10`),
+            h('span', { class: d > 0.05 ? 'up' : d < -0.05 ? 'down' : 'same' }, d > 0.05 ? ` +${d.toFixed(1)} above my average` : d < -0.05 ? ` ${d.toFixed(1)} below my average` : ' same as my average'),
+            h('div', { class: 'small muted' }, 'Estimate of a general model (MEBeauty / SCUT-FBP5500), not my own taste.')));
+        }
         const cf = det.conf ?? p.c;
         if (cf !== null && cf !== undefined) side.append(h('div', { class: 'small', style: { color: cf < LOW_CONF ? '#ff8a7a' : '#aaa' } }, `Confidence ${Math.round(cf * 100)}%` + (cf < LOW_CONF ? ' (face small, blurred or turned away)' : '')));
         if (p.prior || det.prior) side.append(h('div', { class: 'small', style: { color: '#aaa' } }, 'Estimate from simple rules. Rate photos to train your own model.'));

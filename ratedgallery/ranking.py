@@ -14,7 +14,7 @@ import numpy as np
 from . import config, db
 
 log = logging.getLogger("ratedgallery.ranking")
-LAYOUT = 2  # change when the feature layout changes; old models are then ignored
+LAYOUT = 3  # change when the feature layout changes; old models are then ignored
 
 HAND = [
     ("eye_open", "Eyes open"), ("eye_asym", "One eye more closed"), ("smile", "Smile"),

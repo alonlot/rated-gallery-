@@ -220,6 +220,15 @@ def main():
                 print(f"  ok      {name}")
         (models / "buffalo_l.zip").unlink()
     export_with_torch(models)
+    import os
+
+    if not os.environ.get("RG_SKIP_MEBEAUTY"):
+        from . import beauty_train
+
+        try:
+            beauty_train.main()
+        except Exception as e:  # noqa: BLE001  the app still works with the SCUT-FBP5500 model
+            print(f"  warn    MEBeauty attractiveness model not made ({e}); the SCUT-FBP5500 model is used instead")
     print("All models are ready. The app runs offline from now on.")
 
 

@@ -158,3 +158,18 @@ def test_search_rank_rule():
     ids = np.array([1, 2, 3, 4, 5])
     assert [i for i, _ in rank(sims, ids)] == [2, 5, 3]   # best - 0.10 = 0.21 is the cut
     assert rank(np.array([]), np.array([])) == []
+
+
+def test_beauty_head_fit_and_compare():
+    from ratedgallery import beauty_train
+
+    rng = np.random.default_rng(0)
+    E = rng.normal(size=(300, 512))
+    w_true = rng.normal(size=512) / 20
+    split = ["train_2022"] * 200 + ["val_2022"] * 40 + ["test_2022"] * 60
+    keep = [(s, "male" if i % 2 else "female", "caucasian", float(e @ w_true + 5)) for i, (s, e) in enumerate(zip(split, E))]
+    w, b, alpha, r, n = beauty_train.fit(E, keep)
+    assert r > 0.6 and n == 300 and w.shape == (512,)
+    scut = np.array([np.nan if k[0] != "test_2022" else rng.normal() for k in keep])
+    c = beauty_train.compare(E @ w + b, scut, keep)
+    assert c["head_all"] > 0.6 and abs(c["scut_all"]) < 0.5 and "head_caucasian_men" in c

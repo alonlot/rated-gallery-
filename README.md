@@ -126,11 +126,12 @@ about two times longer.
 | Face and photo embeddings | OpenAI CLIP ViT-B/16 image encoder (ONNX by Xenova) | MIT |
 | Image quality | TOPIQ-NR, KonIQ-10k weights (IQA-PyTorch) | **PolyForm Noncommercial 1.0.0** |
 | General attractiveness (one input of your model) | ResNet-18 trained on SCUT-FBP5500 (official weights, converted to ONNX at install) | **SCUT-FBP5500: non-commercial research only** |
+| General attractiveness, preferred when it tests better | Ridge head on CLIP face values, trained at install on MEBeauty (2,550 photos, 6 ethnic groups, about 300 raters each) | **MEBeauty: non-commercial academic research only** (skip with `RG_SKIP_MEBEAUTY=1`) |
 | Offline place names | GeoNames cities1000 via reverse_geocoder | CC BY 4.0 (data), LGPL (library) |
 | Text search, photo side | OpenAI CLIP ViT-B/32 image encoder (ONNX by Xenova) | MIT |
 | Text search, text side (50+ languages, Hebrew included) | sentence-transformers clip-ViT-B-32-multilingual-v1, int8 | Apache 2.0 |
 
-Four models are for non-commercial use only. Personal use is permitted. If you sell or publish this app,
+Five models or datasets are for non-commercial use only. Personal use is permitted. If you sell or publish this app,
 you must replace them. Libraries: onnxruntime-directml (MIT), FastAPI (MIT), uvicorn (BSD), Pillow (MIT-CMU),
 pillow-heif (BSD-3, includes LGPL libheif), imagehash (BSD-2), NumPy and SciPy (BSD), qrcode (BSD),
 psutil (BSD), Leaflet (BSD-2, stored in `ratedgallery/static/vendor`). Map tiles: OpenStreetMap (ODbL).

@@ -396,8 +396,9 @@ def run_pass2(pool, prog: Progress, clip, iqa) -> int:
 
 def _flush_pass2(buf, clip, iqa):
     t0 = time.perf_counter()
-    beauty = beauty_scores([r["face_id"] for r in buf])
     ef = clip.embed([r["clip_face"] for r in buf])
+    src = beauty_source()
+    beauty = beauty_from_clip(ef) if src == "mebeauty" else beauty_scores([r["face_id"] for r in buf])
     eF = clip.embed([r["clip_full"] for r in buf])
     q = iqa.score([r["iqa_in"] for r in buf])
     _throttle(t0)
@@ -409,7 +410,7 @@ def _flush_pass2(buf, clip, iqa):
             f.update(det=face[0], emb_norm=face[1], me_sim=face[2] if face[2] is not None else 1.0, iqa=q[k],
                      facing=ph[0])
             if beauty[k] is not None:
-                f["beauty"] = beauty[k]
+                f["beauty"], f["beauty_src"] = beauty[k], src
             c.execute("""INSERT INTO features(face_id,photo_id,data,clip_face,clip_full,iqa,version,updated)
                          VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(face_id) DO UPDATE SET data=excluded.data,
                          clip_face=excluded.clip_face, clip_full=excluded.clip_full, iqa=excluded.iqa,
@@ -422,8 +423,29 @@ def _flush_pass2(buf, clip, iqa):
     return len(buf)
 
 
+def beauty_source():
+    """'mebeauty' (CLIP head trained at install), 'scut' (SCUT-FBP5500 ResNet-18), or None."""
+    from . import beauty_train
+    from .models import missing_models
+
+    if beauty_train.head_path().exists():
+        return "mebeauty"
+    if "beauty" not in missing_models():
+        return "scut"
+    return None
+
+
+def beauty_from_clip(clip_face_embs):
+    """MEBeauty head: one dot product per face on the CLIP face embedding. Scale 1..10."""
+    from . import beauty_train
+
+    w, b = beauty_train.load_head()
+    E = np.asarray(clip_face_embs, dtype=np.float32).reshape(-1, 512)
+    return [float(np.clip(v, 1, 10)) for v in E @ w + b]
+
+
 def beauty_scores(face_ids):
-    """General attractiveness model on the cached 256 px face crops. None where not possible."""
+    """SCUT-FBP5500 model on the cached 256 px face crops, converted from its 1..5 scale to 1..10."""
     from .models import Beauty, missing_models
 
     if "beauty" in missing_models():
@@ -437,26 +459,33 @@ def beauty_scores(face_ids):
     out = [None] * len(face_ids)
     if crops:
         for i, v in zip(idx, Beauty().score(crops)):
-            out[i] = v
+            out[i] = 1 + (float(v) - 1) * 9 / 4
     return out
 
 
 def backfill_beauty(prog: Progress | None = None) -> int:
-    """Add the attractiveness value to features computed before this model existed (no re-read of photos)."""
-    rows = db.q("SELECT face_id, data FROM features WHERE json_extract(data, '$.beauty') IS NULL")
+    """(Re)compute the attractiveness value where it is missing or comes from another model (no photo is read again)."""
+    src = beauty_source()
+    if src is None:
+        return 0
+    rows = db.q("SELECT face_id, data, clip_face FROM features WHERE json_extract(data, '$.beauty') IS NULL "
+                "OR COALESCE(json_extract(data, '$.beauty_src'), 'scut1to5') != ?", (src,))
     if not rows:
         return 0
     if prog:
-        prog.set_phase("Adding the attractiveness model to analyzed photos", len(rows))
+        prog.set_phase("Updating the attractiveness values", len(rows))
     n = 0
-    for i in range(0, len(rows), 64):
-        chunk = rows[i:i + 64]
-        vals = beauty_scores([r[0] for r in chunk])
+    for i in range(0, len(rows), 256):
+        chunk = rows[i:i + 256]
+        if src == "mebeauty":
+            vals = beauty_from_clip([np.frombuffer(r[2], np.float32) for r in chunk])
+        else:
+            vals = beauty_scores([r[0] for r in chunk])
         upd = []
-        for (fid, data), v in zip(chunk, vals):
+        for (fid, data, _), v in zip(chunk, vals):
             if v is not None:
                 d = json.loads(data)
-                d["beauty"] = v
+                d["beauty"], d["beauty_src"] = v, src
                 upd.append((json.dumps(d), fid))
         with db.tx() as c:
             c.executemany("UPDATE features SET data=? WHERE face_id=?", upd)
