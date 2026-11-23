@@ -16,7 +16,7 @@
 - Linux container, CPU only: 24 pytest tests (unit + end-to-end on public-domain NASA portraits), Node checks of the gallery logic, 102 Android JVM unit tests, Android lint, a full install from zero.
 - Also run on a 400-photo NASA library (screenshots).
 - Windows 11, Ryzen 5 5600X + RX 6600 XT: `install.bat` from zero (Python 3.11.9), 26 pytest tests pass, `start.bat`.
-  All models run on DirectML. Measured: scan about 1,500 photos/min, analysis of photos of me about 850/min.
+  All models run on DirectML. Measured: scan about 1,900 photos/min (1,500 before the speed work), analysis of photos of me about 850/min.
   MEBeauty at install: correlation 0.807 (all) and 0.780 (Caucasian men), SCUT-FBP5500 0.234 and 0.065.
 - Attractiveness display and "Attractiveness" sort checked in a browser with the test library.
 

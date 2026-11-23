@@ -95,13 +95,14 @@ At the first start, each model is checked on DirectML in a separate process, wit
 (result saved in `data\models\dml_probe.json`). If DirectML fails for a model, that model runs on the CPU.
 A failed check can no longer break DirectML for the other models.
 **Library > Speed on this PC** shows the device of each model and an estimate in photos per minute.
-The estimate is too high: on the RX 6600 XT it shows about 3,500 per minute for the scan; the measured speed is 1,500.
+On the RX 6600 XT the scan estimate is about 2,300 per minute and the measured speed 1,900. The estimate for the analysis
+of photos of you is about 2 times too high (1,600 shown, 850 measured).
 
 ## Expected scan time per 10,000 photos
 
 Measured on a Ryzen 5 5600X + RX 6600 XT (all models on DirectML, 5 workers), with 600 synthetic 12 MP JPEGs
-(4032 x 3024, about 1.1 MB each) on an SSD: **about 1,500 photos per minute** for the scan (decode, metadata,
-thumbnail, faces), plus about 4,200 per minute to make the photos searchable, and **about 850 photos per minute** for the
+(4032 x 3024, about 1.1 MB each) on an SSD: **about 1,900 photos per minute** for the scan (decode, metadata,
+thumbnail, faces), plus about 9,900 per minute to make the photos searchable, and **about 850 photos per minute** for the
 analysis of photos of you. Real phone JPEGs are larger (3 to 5 MB), so expect a little less.
 
 Measured in the development container (4 virtual CPU cores, no GPU, all models on the CPU, 3 workers):
@@ -109,7 +110,7 @@ Measured in the development container (4 virtual CPU cores, no GPU, all models o
 
 | Step | Ryzen 5 5600X + RX 6600 XT (DirectML) | CPU only (estimate) |
 |---|---|---|
-| Scan, Takeout on SSD, mostly JPEG | about 9 min (measured rate) | 25 to 40 min |
+| Scan, Takeout on SSD, mostly JPEG | about 6 min (measured rate) | 25 to 40 min |
 | Scan, many HEIC files (no reduced-size decoding for HEIC) | 10 to 20 min | 30 to 45 min |
 | Scan, phone over Wi-Fi (about 40 GB) | 20 to 45 min (limit: Wi-Fi) | 30 to 50 min |
 | Analysis of the photos of you (about 3,000 of 10,000) | about 4 min (measured rate) | 15 to 25 min |

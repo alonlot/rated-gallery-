@@ -208,6 +208,8 @@ def run_pass1(rows, pool, prog: Progress, det, arc, hidx: HashIndex, new_faces: 
     except BaseException:
         c.execute("COMMIT")  # keep finished work; the current file stays 'new' and is retried
         raise
+    finally:
+        CROPS.wait()
 
 
 def _scan_task_ref():
@@ -319,7 +321,7 @@ def _detect_faces(c, pid, res, det, arc, new_faces):
         t0 = time.perf_counter()
         embs, norms = arc.embed(crops)
         _throttle(t0)
-        pil = Image.fromarray(img)
+        crops_todo = []
         for j, i in enumerate(keep):
             b = np.clip(boxes[i] / [W, H, W, H], 0, 1)
             k = (kps[i] / [W, H]).round(5).tolist()
@@ -328,10 +330,53 @@ def _detect_faces(c, pid, res, det, arc, new_faces):
                             (pid, *map(float, b), float(scores[i]), json.dumps(k), size_px,
                              db.f32(embs[j]), float(norms[j]))).lastrowid
             new_faces.append(fid)
-            imaging.save_jpeg(imaging.square_crop(pil, b, 1.6, 256), face_crop_path(fid), quality=85)
+            crops_todo.append((fid, b))
             if scores[i] >= 0.6 and (b[2] - b[0]) >= 0.03:
                 n_people += 1
+        CROPS.submit(img, crops_todo)
     c.execute("UPDATE photos SET n_faces=?, n_people=? WHERE id=?", (len(keep), n_people, pid))
+
+
+class CropWriter:
+    """Writes the 256 px face crops in background threads, so the main loop (GPU models) does not wait for
+    image conversion, resizing, JPEG encoding and file writes (about 9 ms per photo). Call wait() before the
+    crops are needed."""
+
+    MAX_PENDING = 64
+
+    def __init__(self, threads=2):
+        self.threads = threads
+        self.ex = None
+        self.pending = []
+
+    @staticmethod
+    def _write(img, items):
+        pil = Image.fromarray(img)
+        for fid, b in items:
+            imaging.save_jpeg(imaging.square_crop(pil, b, 1.6, 256), face_crop_path(fid), quality=85)
+
+    def submit(self, img, items):
+        from concurrent.futures import ThreadPoolExecutor
+
+        if self.ex is None:
+            self.ex = ThreadPoolExecutor(self.threads, thread_name_prefix="facecrop")
+        self.pending.append(self.ex.submit(self._write, img, items))
+        while len(self.pending) > self.MAX_PENDING:  # bounded memory if the writers fall behind
+            self._done(self.pending.pop(0))
+
+    @staticmethod
+    def _done(fut):
+        try:
+            fut.result()
+        except Exception as e:  # noqa: BLE001  a missing crop is shown as a placeholder; the scan goes on
+            log.warning("Face crop not saved: %s", e)
+
+    def wait(self):
+        while self.pending:
+            self._done(self.pending.pop(0))
+
+
+CROPS = CropWriter()
 
 
 # ---------------------------------------------------------------- pass 2

@@ -175,29 +175,44 @@ def index_job(prog=None) -> int:
     if prog:
         prog.set_phase("Making photos searchable", len(rows))
     enc = ImageEncoder()
+    thumbs = config.cache_dir("thumbs")
+
+    def load(row):
+        try:
+            return row[0], clip_input(Image.open(thumbs / row[1]).convert("RGB"))
+        except OSError:
+            return row[0], None
+
+    from concurrent.futures import ThreadPoolExecutor
+
     n = 0
-    for i in range(0, len(rows), 32):
-        chunk = rows[i:i + 32]
-        imgs, ids = [], []
-        for pid, rel in chunk:
-            p = config.cache_dir("thumbs") / rel
-            try:
-                imgs.append(clip_input(Image.open(p).convert("RGB")))
-                ids.append(pid)
-            except OSError:
-                continue
-        t0 = time.perf_counter()
-        E = enc.embed(imgs)
-        if config.settings()["low_priority"]:
-            time.sleep(min(1.0, time.perf_counter() - t0))
-        with db.tx() as c:
-            c.executemany("INSERT OR REPLACE INTO photo_vec(photo_id, emb) VALUES(?,?)",
-                          [(pid, e.astype(np.float16).tobytes()) for pid, e in zip(ids, E)])
-        n += len(ids)
-        if prog:
-            prog.step(len(chunk))
+    chunks = [rows[i:i + 32] for i in range(0, len(rows), 32)]
+    # thumbnails are decoded in threads, one chunk ahead of the GPU (decoding was most of the time)
+    with ThreadPoolExecutor(4, thread_name_prefix="searchthumb") as ex:
+        nxt = ex.map(load, chunks[0])
+        for k, chunk in enumerate(chunks):
+            loaded = [(pid, im) for pid, im in nxt if im is not None]
+            if k + 1 < len(chunks):
+                nxt = ex.map(load, chunks[k + 1])
+            ids, imgs = [pid for pid, _ in loaded], [im for _, im in loaded]
+            n += _index_chunk(enc, ids, imgs)
+            if prog:
+                prog.step(len(chunk))
     _cache["ver"] = None
     return n
+
+
+def _index_chunk(enc, ids, imgs) -> int:
+    if not ids:
+        return 0
+    t0 = time.perf_counter()
+    E = enc.embed(imgs)
+    if config.settings()["low_priority"]:
+        time.sleep(min(1.0, time.perf_counter() - t0))
+    with db.tx() as c:
+        c.executemany("INSERT OR REPLACE INTO photo_vec(photo_id, emb) VALUES(?,?)",
+                      [(pid, e.astype(np.float16).tobytes()) for pid, e in zip(ids, E)])
+    return len(ids)
 
 
 _cache = {"ver": None, "ids": None, "E": None}
