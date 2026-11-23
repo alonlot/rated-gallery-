@@ -173,3 +173,51 @@ def test_beauty_head_fit_and_compare():
     scut = np.array([np.nan if k[0] != "test_2022" else rng.normal() for k in keep])
     c = beauty_train.compare(E @ w + b, scut, keep)
     assert c["head_all"] > 0.6 and abs(c["scut_all"]) < 0.5 and "head_caucasian_men" in c
+
+
+def test_dml_check_failure_uses_cpu_and_is_cached(tmp_path, monkeypatch):
+    """A failed DirectML check (child process) gives a CPU session; DirectML is never tried in this process."""
+    import shutil
+
+    from ratedgallery import config, models
+
+    src = config.MODELS / models.FILES["scrfd"]
+    if not src.exists():
+        pytest.skip("models missing")
+    shutil.copy(src, tmp_path / src.name)
+    monkeypatch.setattr(config, "MODELS", tmp_path)
+    config.reset_settings_for_tests(tmp_path / "settings.json")
+    monkeypatch.setattr(models, "_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    calls = []
+
+    def fake_probe(name, feeds, dims):
+        calls.append((name, feeds, dims))
+        return {"ok": False, "error": "DirectML check crashed (exit code 0xc0000005)"}
+
+    monkeypatch.setattr(models, "_run_probe", fake_probe)
+    models.reset()
+    try:
+        det = models.SCRFD()
+        assert det.sess.get_providers() == ["CPUExecutionProvider"]
+        assert models.DEVICES["scrfd"]["device"] == "CPU"
+        assert "crashed" in models.DEVICES["scrfd"]["error"]
+        models.reset()
+        models.SCRFD()
+        assert calls == [("scrfd", {"input.1": [1, 3, 640, 640]}, {})]   # second start: result from dml_probe.json
+    finally:
+        models.reset()
+
+
+def test_arcface_runs_on_directml_with_fixed_batch():
+    """ArcFace (w600k_r50) declares its output batch as 1; with a free batch size its last BatchNormalization
+    fails on DirectML for batches > 1. With the batch size fixed it must work (only on PCs with DirectML)."""
+    import onnxruntime as ort
+
+    from ratedgallery import config, models
+
+    if "DmlExecutionProvider" not in ort.get_available_providers():
+        pytest.skip("no DirectML on this PC")
+    if not (config.MODELS / models.FILES["arcface"]).exists():
+        pytest.skip("models missing")
+    res = models._run_probe("arcface", {"input.1": [8, 3, 112, 112]}, {"None": 8})
+    assert res["ok"], res

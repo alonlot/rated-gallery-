@@ -139,9 +139,9 @@ class TextEncoder:
 
 class ImageEncoder:
     def __init__(self):
-        from .models import _session
+        from .models import CLIP_DIMS, _session
 
-        self.sess = _session("search_vision", lambda s: s.run(None, {"pixel_values": np.zeros((8, 3, 224, 224), np.float32)}))
+        self.sess = _session("search_vision", {"pixel_values": (8, 3, 224, 224)}, CLIP_DIMS)
 
     def embed(self, imgs224):
         from .models import CLIP_MEAN, CLIP_STD
