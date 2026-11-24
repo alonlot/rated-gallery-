@@ -504,6 +504,12 @@ export function createGallery(root, provider) {
             h('span', { class: d > 0.05 ? 'up' : d < -0.05 ? 'down' : 'same' }, d > 0.05 ? ` +${d.toFixed(1)} above my average` : d < -0.05 ? ` ${d.toFixed(1)} below my average` : ' same as my average'),
             h('div', { class: 'small muted' }, 'Estimate of a general model (MEBeauty / SCUT-FBP5500), not my own taste.')));
         }
+        if (p.hr !== null && p.hr !== undefined) {
+          const d = p.hr - 5.5;
+          side.append(h('div', { class: 'attr' }, h('b', {}, `Hair ${p.hr.toFixed(1)}/10`),
+            h('span', { class: d > 0.5 ? 'up' : d < -0.5 ? 'down' : 'same' }, d > 0.5 ? ' better than my average' : d < -0.5 ? ' worse than my average' : ' about my average'),
+            h('div', { class: 'small muted' }, 'From my hair answers (Hair good / Hair bad, hair A/B).')));
+        }
         const cf = det.conf ?? p.c;
         if (cf !== null && cf !== undefined) side.append(h('div', { class: 'small', style: { color: cf < LOW_CONF ? '#ff8a7a' : '#aaa' } }, `Confidence ${Math.round(cf * 100)}%` + (cf < LOW_CONF ? ' (face small, blurred or turned away)' : '')));
         if (p.prior || det.prior) side.append(h('div', { class: 'small', style: { color: '#aaa' } }, 'Estimate from simple rules. Rate photos to train your own model.'));

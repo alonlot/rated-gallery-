@@ -18,6 +18,7 @@ from . import config, imaging, metadata, offline
 
 log = logging.getLogger("ratedgallery.workers")
 _landmarker = None
+_hair = None
 _lm_error_logged = False
 
 
@@ -86,6 +87,15 @@ def _lm():
     return _landmarker
 
 
+def _hairseg():
+    global _hair
+    if _hair is None:
+        from .models import HairSegmenter
+
+        _hair = HairSegmenter()
+    return _hair
+
+
 def features_task(job: dict) -> dict:
     """job: photo_id, face_id, path, box (normalized x1,y1,x2,y2), kps (normalized 5x2), preview (path or None)."""
     import cv2
@@ -145,7 +155,19 @@ def features_task(job: dict) -> dict:
         f["bg_contrast"] = f["face_mean"] - bg
         f["face_frac"] = float((x2 - x1) * (y2 - y1))
         f["face_w"] = float(x2 - x1)
+        # hair: head crop around the face (the face is at a fixed place in it), hair mask, simple measures
+        from .models import hair_measures, head_box
+
+        head = imaging.square_crop(full, head_box(box), 1.0, 512)
+        try:
+            f.update(hair_measures(_hairseg().mask(np.asarray(head))))
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger("ratedgallery.workers").warning("hair segmenter failed: %s", e)
+            f.update(hair_present=float("nan"), hair_area=float("nan"), hair_rough=float("nan"),
+                     hair_over_face=float("nan"), hair_lr=float("nan"))
+        f["hair_v"] = 1
         out["features"] = f
+        out["clip_head"] = clip_input(head)
         out["clip_face"] = clip_input(imaging.square_crop(full, box, 1.25, 256))
         out["clip_full"] = clip_input(full)
         out["iqa_in"] = np.asarray(full.resize((384, 384), Image.Resampling.BICUBIC), dtype=np.uint8)

@@ -217,38 +217,40 @@ async function renderCalibrate() {
   view.append(head, q, box);
   let current = null;
   let history = [];
+  let hairTag = 0;      // optional: +1 hair good, -1 hair bad, for the current photo
+  const isPair = () => current?.kind === 'pair' || current?.kind === 'hairpair';
   const showModel = m => {
     if (!m) return;
     q.innerHTML = '';
     q.append(h('b', {}, m.message), h('div', { class: 'muted' }, `${m.ratings} ratings, ${m.pairs} comparisons` + (m.spearman !== null && m.spearman !== undefined ? `, Spearman ${m.spearman.toFixed(2)} on held-out ratings` : '')),
-      m.beauty && m.beauty.message ? h('div', { class: 'muted' }, m.beauty.message) : null);
+      m.beauty && m.beauty.message ? h('div', { class: 'muted' }, m.beauty.message) : null,
+      ...(m.extra || []).map(x => h('div', { class: 'muted' }, x)),
+      m.hair ? h('div', { class: 'muted' }, m.hair) : null);
   };
 
   const next = async (forceItem) => {
     const r = forceItem || await api('/api/calib/next');
     showModel(r.model);
     current = r;
+    hairTag = 0;
     box.innerHTML = '';
     if (r.kind === 'done') { box.append(h('div', { class: 'card' }, 'No more photos to rate now. Scan more photos or check "Me & People".')); return; }
-    if (r.kind === 'rate') drawRate(r.item); else drawPair(r.a, r.b);
+    if (r.kind === 'rate') drawRate(r.item); else drawPair(r.a, r.b, r.kind === 'hairpair');
   };
 
   const send = async (path, body) => { try { const r = await api(path, { method: 'POST', body }); showModel(r.model); } catch (e) { toast(e.message); } };
-  const rate = async n => { if (current?.kind !== 'rate') return; history.push(current); await send('/api/calib/rate', { face_id: current.item.face_id, rating: n }); next(); };
+  const rate = async n => { if (current?.kind !== 'rate') return; history.push(current); await send('/api/calib/rate', { face_id: current.item.face_id, rating: n, hair: hairTag }); next(); };
   const skip = async () => { if (current?.kind !== 'rate') return; await send('/api/calib/skip', { face_id: current.item.face_id }); next(); };
   const undo = async () => { const r = await api('/api/calib/undo', { method: 'POST' }); if (r.ok && r.redo) { toast('Undone'); next({ ...r.redo, model: null }); } else toast('Nothing to undo'); };
-  const compare = async res => { if (current?.kind !== 'pair') return; await send('/api/calib/compare', { a: current.a.face_id, b: current.b.face_id, result: res }); next(); };
+  const compare = async res => { if (!isPair()) return; await send('/api/calib/compare', { a: current.a.face_id, b: current.b.face_id, result: res, kind: current.kind === 'hairpair' ? 'hair' : 'overall' }); next(); };
+  let hairBtns = null;
+  const setHair = v => { hairTag = hairTag === v ? 0 : v; if (hairBtns) { hairBtns[0].classList.toggle('on', hairTag === 1); hairBtns[1].classList.toggle('on', hairTag === -1); } };
 
   function fullWithBox(it) {
-    const wrap = h('div', { class: 'full' });
-    const img = h('img', { src: `/api/photo/${it.photo_id}/view`, alt: '' });
-    const box = h('div', { class: 'facebox' });
-    img.onload = () => {
-      const r = img.getBoundingClientRect(), w = wrap.getBoundingClientRect();
-      Object.assign(box.style, { left: (r.left - w.left + it.box[0] * r.width) + 'px', top: (r.top - w.top + it.box[1] * r.height) + 'px', width: ((it.box[2] - it.box[0]) * r.width) + 'px', height: ((it.box[3] - it.box[1]) * r.height) + 'px' });
-    };
-    wrap.append(img, box);
-    return wrap;
+    // the box is positioned in % of the photo itself, so it stays on the face at any size or layout
+    const pct = v => (v * 100).toFixed(2) + '%';
+    const box = h('div', { class: 'facebox', style: { left: pct(it.box[0]), top: pct(it.box[1]), width: pct(it.box[2] - it.box[0]), height: pct(it.box[3] - it.box[1]) } });
+    return h('div', { class: 'full' }, h('div', { class: 'imgbox' }, h('img', { src: `/api/photo/${it.photo_id}/view`, alt: '' }), box));
   }
 
   function drawRate(it) {
@@ -257,15 +259,19 @@ async function renderCalibrate() {
     box.append(h('div', { class: 'cal-acts' },
       h('div', { class: 'small muted', style: { marginBottom: '6px' } }, 'How good do I look in this photo? ', h('span', { class: 'kbd' }, '1'), '…', h('span', { class: 'kbd' }, '9'), ' ', h('span', { class: 'kbd' }, '0'), '=10 · ', h('span', { class: 'kbd' }, 'S'), ' skip · ', h('span', { class: 'kbd' }, 'U'), ' undo'),
       h('div', { class: 'rate10' }, ...Array.from({ length: 10 }, (_, k) => h('button', { onclick: () => rate(k + 1) }, String(k + 1)))),
-      h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { onclick: skip }, 'Skip'), h('button', { onclick: undo }, 'Undo'))));
+      h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { onclick: skip }, 'Skip'), h('button', { onclick: undo }, 'Undo'),
+        h('span', { class: 'grow' }),
+        (hairBtns = [h('button', { class: 'chip', onclick: () => setHair(1), title: 'Optional. Key H' }, 'Hair good'),
+          h('button', { class: 'chip', onclick: () => setHair(-1), title: 'Optional. Key J' }, 'Hair bad')]),
+        h('span', { class: 'small muted' }, h('span', { class: 'kbd' }, 'H'), ' / ', h('span', { class: 'kbd' }, 'J'), ' optional, before the rating'))));
   }
 
-  function drawPair(a, b) {
+  function drawPair(a, b, hair = false) {
     const side = (it, res) => h('div', { class: 'side', onclick: () => compare(res) },
-      h('img', { src: `/api/face/${it.face_id}/large`, alt: '' }), h('img', { class: 'smallfull', src: `/api/photo/${it.photo_id}/view`, alt: '' }));
+      h('img', { src: `/api/face/${it.face_id}/${hair ? 'head' : 'large'}`, alt: '' }), hair ? null : h('img', { class: 'smallfull', src: `/api/photo/${it.photo_id}/view`, alt: '' }));
     const pr = h('div', { class: 'pair' }, side(a, 'a'), side(b, 'b'));
     onSwipe(pr, dir => compare(dir === 'left' ? 'a' : 'b'));
-    box.append(h('h2', {}, 'Which photo of me is better?'), pr,
+    box.append(h('h2', {}, hair ? 'Which photo has better hair?' : 'Which photo of me is better?'), pr,
       h('div', { class: 'cal-acts' }, h('div', { class: 'small muted', style: { marginBottom: '6px' } }, 'Tap or swipe toward the better one. ', h('span', { class: 'kbd' }, '←'), ' left · ', h('span', { class: 'kbd' }, '→'), ' right · ', h('span', { class: 'kbd' }, '↓'), ' equal'),
         h('div', { class: 'row' }, h('button', { class: 'grow', onclick: () => compare('a') }, '← Left'), h('button', { class: 'grow', onclick: () => compare('eq') }, 'Equal'), h('button', { class: 'grow', onclick: () => compare('b') }, 'Right →')),
         h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { onclick: () => api('/api/calib/next?skip_pair=true').then(r => next(r)) }, 'Skip'), h('button', { onclick: undo }, 'Undo'))));
@@ -276,7 +282,8 @@ async function renderCalibrate() {
     if (current?.kind === 'rate') {
       if (/^[1-9]$/.test(e.key)) rate(+e.key); else if (e.key === '0') rate(10);
       else if (e.key.toLowerCase() === 's') skip(); else if (e.key.toLowerCase() === 'u') undo();
-    } else if (current?.kind === 'pair') {
+      else if (e.key.toLowerCase() === 'h') setHair(1); else if (e.key.toLowerCase() === 'j') setHair(-1);
+    } else if (isPair()) {
       if (e.key === 'ArrowLeft') compare('a'); else if (e.key === 'ArrowRight') compare('b'); else if (e.key === 'ArrowDown') compare('eq');
       else if (e.key.toLowerCase() === 'u') undo();
     }

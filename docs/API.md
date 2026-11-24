@@ -215,3 +215,10 @@ time = `created`), so they count for training. Sending the same item twice does 
 - `"sp"`: my score compared only with photos from the same period (about the same years), 1..10, or null.
   The gallery shows `sp` instead of `s` when the user selects "Score per period".
 - The index top level has `"index_version": 2`. Older apps ignore unknown fields.
+
+## 9. Index fields added later (version 2, optional)
+
+- `"a"`: general attractiveness of my face in this photo, 1..10 (general model), or null.
+- `"ad"`: `a` minus my average `a` (positive = above my average), or null.
+- `"hr"`: hair score 1..10 from my hair answers (my average is 5.5), or null until the hair model is trained.
+Older apps ignore these fields.

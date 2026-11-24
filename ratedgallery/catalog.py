@@ -45,7 +45,7 @@ def build_index(device_source: int | None = None) -> dict:
         for pid, rel in db.q("SELECT photo_id, rel FROM files WHERE source_id=? AND status='done' AND photo_id IS NOT NULL",
                              (device_source,)):
             mids[pid] = rel
-    rows = db.q(f"""SELECT p.*, s.score, s.conf, s.prior, s.contrib, s.score_p, src.kind AS src_kind,
+    rows = db.q(f"""SELECT p.*, s.score, s.conf, s.prior, s.contrib, s.score_p, s.hair, src.kind AS src_kind,
                     json_extract(fe.data, '$.beauty') AS beauty
                     FROM photos p LEFT JOIN scores s ON s.face_id=p.me_face
                     LEFT JOIN features fe ON fe.face_id=p.me_face
@@ -75,6 +75,7 @@ def build_index(device_source: int | None = None) -> dict:
              "r": ratings.get(r["me_face"]) if has_me else None,
              # general attractiveness model, 1..10, and the difference from my own average (display only)
              "a": round(r["beauty"], 1) if has_me and r["beauty"] is not None else None,
+             "hr": round(r["hair"], 1) if has_me and r["hair"] is not None else None,  # hair 1..10, my average is 5.5
              "ad": round(r["beauty"] - bmean, 1) if has_me and r["beauty"] is not None and bmean is not None else None, "p": sorted(pmap.get(r["id"], [])),
              "w": r["width"], "h": r["height"], "src": "phone" if r["src_kind"] == "device" else "folder", "b": r["burst"]}
         if device_source is not None:

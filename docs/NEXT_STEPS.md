@@ -25,6 +25,10 @@
 - **MEBeauty attractiveness model.** `install.bat` trains it on the PC from the MEBeauty dataset (`ratedgallery/beauty_train.py`). It compares it with SCUT-FBP5500 on the same test faces (all faces, and Caucasian men) and keeps it only if it is better. The install log shows the result. MEBeauty terms: non-commercial academic research only. Private use only; never in an app that is sold.
 - **Separate attractiveness display.** The detail view shows "General attractiveness X/10" and the difference from my own average, plus a sort option "Attractiveness". The code is done but was not checked in a browser.
 
+- **Hair.** Hair measurements (MediaPipe Hair Segmenter), a "hair and head" view (CLIP), optional hair tags in Calibrate
+  (H / J), a hair A/B question about every 10th item, and a small hair model. Tested on CPU here. Photos analyzed
+  before this version are analyzed again at the first start (phone photos are uploaded again at the next sync).
+
 ### Known limits
 - Hebrew search is weaker than English.
 - Identical twins can be matched as "me".

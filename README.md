@@ -56,17 +56,22 @@ photos on the PC. Give the PC a fixed IP address in your router. If the IP addre
    - Phone: large buttons, swipe toward the better photo in A/B.
    - The model trains again after every 10 new ratings and scores all your photos.
      The box at the top shows the quality (Spearman correlation on ratings the model did not train on).
-4. **Search**: type what you look for in the search box of the gallery, in English or Hebrew (50+ languages),
+4. **Hair**: in Calibrate you can tap **Hair good** or **Hair bad** (keys `H` / `J`) before the rating. It is optional;
+   do it only when the hair is clearly good or bad. About every 10th item asks "Which photo has better hair?".
+   The app measures the hair in each photo of you (volume, messy outline, hair over the face, hair pushed to one
+   side) and learns from your answers. The detail view shows "Hair X/10" and if that is better or worse than your average.
+   Each new input group (hair and head view, hair model, attractiveness model) is kept only if it improves your model.
+5. **Search**: type what you look for in the search box of the gallery, in English or Hebrew (50+ languages),
    for example "river", "sunset at the beach" or "עוגת יום הולדת". The best matches come first, and all filters still apply.
    Search also works offline in the phone app (the phone downloads the 137 MB text model from the PC one time).
    Limits: counting ("3 people"), negation ("no people"), names and text inside photos do not work well.
    Hebrew results are a little weaker than English results. Use filters for people, dates and places.
-5. **Gallery (PC and phone)**: quick chips at the top: Photos / Trips / Map, **Best of bursts** (one photo per burst,
+6. **Gallery (PC and phone)**: quick chips at the top: Photos / Trips / Map, **Best of bursts** (one photo per burst,
    tap "+N" to see the others), **Per period** (compare each photo only with photos from about the same years, because
    your look changes over time), With me / Everyone, Selfies, 8+, Me alone. **Trips**: the app finds your home (the city with
    the most photos); a trip is photos more than 80 km from home with gaps of 2 days or less. **Events**: 6 or more photos
    taken within a few hours. On the phone you can also rate photos offline; the ratings go to the PC at the next sync.
-6. **Filters**: filters (score, confidence, people, date, time of day, place, radius, camera, front/rear camera,
+7. **Filters**: filters (score, confidence, people, date, time of day, place, radius, camera, front/rear camera,
    number of people). Tap a photo for the score breakdown and all metadata. **Select** copies originals to a folder.
 
 ## What the app does with your files
@@ -128,6 +133,7 @@ about two times longer.
 | General attractiveness (one input of your model) | ResNet-18 trained on SCUT-FBP5500 (official weights, converted to ONNX at install) | **SCUT-FBP5500: non-commercial research only** |
 | General attractiveness, preferred when it tests better | Ridge head on CLIP face values, trained at install on MEBeauty (2,550 photos, 6 ethnic groups, about 300 raters each) | **MEBeauty: non-commercial academic research only** (skip with `RG_SKIP_MEBEAUTY=1`) |
 | Offline place names | GeoNames cities1000 via reverse_geocoder | CC BY 4.0 (data), LGPL (library) |
+| Hair outline (hair measurements) | MediaPipe Hair Segmenter | Apache 2.0 |
 | Text search, photo side | OpenAI CLIP ViT-B/32 image encoder (ONNX by Xenova) | MIT |
 | Text search, text side (50+ languages, Hebrew included) | sentence-transformers clip-ViT-B-32-multilingual-v1, int8 | Apache 2.0 |
 

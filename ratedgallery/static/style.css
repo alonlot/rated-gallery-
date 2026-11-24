@@ -212,3 +212,5 @@ details.filters > summary::-webkit-details-marker { display: none; }
 
 .attr { margin: 6px 0 4px; font-size: 14px; }
 .attr .up { color: #47c27a; } .attr .down { color: #ff8a7a; } .attr .same { color: #aaa; }
+
+.cal .full .imgbox { position: relative; display: inline-block; line-height: 0; max-width: 100%; }

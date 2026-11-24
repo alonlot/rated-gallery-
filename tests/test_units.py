@@ -173,3 +173,25 @@ def test_beauty_head_fit_and_compare():
     scut = np.array([np.nan if k[0] != "test_2022" else rng.normal() for k in keep])
     c = beauty_train.compare(E @ w + b, scut, keep)
     assert c["head_all"] > 0.6 and abs(c["scut_all"]) < 0.5 and "head_caucasian_men" in c
+
+
+def test_hair_measures():
+    from ratedgallery.models import hair_measures
+
+    m = np.zeros((512, 512), bool)
+    m[60:230, 150:360] = True                      # neat hair above the face
+    neat = hair_measures(m)
+    rng = np.random.default_rng(0)
+    for _ in range(400):                            # flyaway strands (wind)
+        y, x = rng.integers(20, 260), rng.integers(60, 450)
+        m[y:y + 6, x:x + 6] = True
+    windy = hair_measures(m)
+    assert neat["hair_present"] == 1 and neat["hair_rough"] < 1.2 < windy["hair_rough"]
+    side = np.zeros((512, 512), bool)
+    side[60:230, 260:420] = True                    # hair pushed to one side
+    assert hair_measures(side)["hair_lr"] > 0.8
+    none = hair_measures(np.zeros((512, 512), bool))
+    assert none["hair_present"] == 0 and np.isnan(none["hair_rough"])
+    clothes = np.zeros((512, 512), bool)
+    clothes[500:, :] = True                         # below the chin does not count as hair (long hair beside the face does)
+    assert hair_measures(clothes)["hair_present"] == 0

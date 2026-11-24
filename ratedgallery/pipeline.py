@@ -397,6 +397,7 @@ def run_pass2(pool, prog: Progress, clip, iqa) -> int:
 def _flush_pass2(buf, clip, iqa):
     t0 = time.perf_counter()
     ef = clip.embed([r["clip_face"] for r in buf])
+    eh = clip.embed([r["clip_head"] for r in buf])
     src = beauty_source()
     beauty = beauty_from_clip(ef) if src == "mebeauty" else beauty_scores([r["face_id"] for r in buf])
     eF = clip.embed([r["clip_full"] for r in buf])
@@ -411,11 +412,12 @@ def _flush_pass2(buf, clip, iqa):
                      facing=ph[0])
             if beauty[k] is not None:
                 f["beauty"], f["beauty_src"] = beauty[k], src
-            c.execute("""INSERT INTO features(face_id,photo_id,data,clip_face,clip_full,iqa,version,updated)
-                         VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(face_id) DO UPDATE SET data=excluded.data,
+            c.execute("""INSERT INTO features(face_id,photo_id,data,clip_face,clip_full,iqa,version,updated,clip_head)
+                         VALUES(?,?,?,?,?,?,1,?,?) ON CONFLICT(face_id) DO UPDATE SET data=excluded.data,
                          clip_face=excluded.clip_face, clip_full=excluded.clip_full, iqa=excluded.iqa,
-                         updated=excluded.updated""",
-                      (r["face_id"], r["photo_id"], json.dumps(f), db.f32(ef[k]), db.f32(eF[k]), q[k], db.now()))
+                         updated=excluded.updated, clip_head=excluded.clip_head""",
+                      (r["face_id"], r["photo_id"], json.dumps(f), db.f32(ef[k]), db.f32(eF[k]), q[k], db.now(),
+                       db.f32(eh[k])))
             c.execute("UPDATE photos SET stage2=1 WHERE id=?", (r["photo_id"],))
             if r.get("preview_bytes"):
                 c.execute("INSERT OR REPLACE INTO previews(photo_id,path,bytes,used) VALUES(?,?,?,?)",
@@ -518,6 +520,15 @@ def drop_preview(photo_id, path=None):
 
 
 # ---------------------------------------------------------------- spool cleanup
+
+def need_hair_update() -> int:
+    """Photos analyzed before the hair measurements existed: analyze them again (the originals are read again)."""
+    rows = db.q("SELECT photo_id FROM features WHERE json_extract(data, '$.hair_v') IS NULL")
+    if rows:
+        with db.tx() as c:
+            c.executemany("UPDATE photos SET stage2=0 WHERE id=? AND stage2=1", [(r[0],) for r in rows])
+    return len(rows)
+
 
 def cleanup_spool():
     """Delete uploaded phone originals that are not needed any more."""

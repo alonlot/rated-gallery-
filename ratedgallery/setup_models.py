@@ -21,6 +21,9 @@ from . import config
 DOWNLOADS = [
     ("buffalo_l.zip", "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
      "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f"),
+    ("hair_segmenter.tflite",
+     "https://storage.googleapis.com/mediapipe-models/image_segmenter/hair_segmenter/float32/1/hair_segmenter.tflite",
+     "2628cf3ce5f695f604cbea2841e00befcaa3624bf80caf3664bef2656d59bf84"),
     ("face_landmarker.task",
      "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
      "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"),

@@ -62,6 +62,8 @@ def _startup():
     register_tasks()
     runner.start()
     db.conn()
+    if not models.missing_models() and pipeline.need_hair_update():
+        runner.request("scan", list_sources=False)  # add hair measurements to photos analyzed before
     if ranking.label_counts()[0] >= 8 and ranking.current_model()[1] is None:
         runner.request("train")  # the saved model has an old feature layout: train again with the same ratings
     if search.ready() and db.val("SELECT COUNT(*) FROM photos p LEFT JOIN photo_vec v ON v.photo_id=p.id "
@@ -356,6 +358,19 @@ def face_large(fid: int):
     return Response(imaging.jpeg_bytes(crop, None, 88), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
+@app.get("/api/face/{fid}/head")
+def face_head(fid: int):
+    """The whole head with the hair (for the hair A/B question)."""
+    f = db.q1("SELECT photo_id, x1, y1, x2, y2 FROM faces WHERE id=?", (fid,))
+    if not f:
+        raise HTTPException(404)
+    im, _ = _view_image(f[0], wait_phone=10)
+    if im is None:
+        return face_img(fid)
+    crop = imaging.square_crop(im, models.head_box([f[1], f[2], f[3], f[4]]), 1.0, 640)
+    return Response(imaging.jpeg_bytes(crop, None, 88), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
 @app.get("/api/photo/{pid}/original")
 def original(pid: int):
     best = db.val("SELECT best_file FROM photos WHERE id=?", (pid,))
@@ -529,6 +544,10 @@ def calib_next(skip_pair: bool = False):
             pr = ranking.select_pair()
             if pr:
                 return {"kind": "pair", "a": _item(pr[0]), "b": _item(pr[1]), "model": ranking.quality()}
+        if CALIB["n"] % 10 == 7 and not skip_pair:  # sometimes: which photo has better hair?
+            pr = ranking.select_pair(kind="hair")
+            if pr:
+                return {"kind": "hairpair", "a": _item(pr[0]), "b": _item(pr[1]), "model": ranking.quality()}
         rated = set(ranking.current_ratings())
         skipped = {r[0] for r in db.q("SELECT face_id FROM skips WHERE active=1")}
         CALIB["queue"] = [f for f in CALIB["queue"] if f not in rated and f not in skipped]
@@ -563,6 +582,9 @@ def calib_rate(body: dict = Body(...)):
         raise HTTPException(400, "Only photos of me can be rated")
     rid = db.ex("INSERT INTO ratings(face_id,photo_id,rating,source,created) VALUES(?,?,?,?,?)",
                 (fid, pid, rating, body.get("source", "calib"), time.time())).lastrowid
+    hair = int(body.get("hair") or 0)
+    if hair in (1, -1):  # optional: hair good / hair bad (undo removes it with the rating)
+        db.ex("INSERT INTO hair_tags(face_id,tag,rating_id,created) VALUES(?,?,?,?)", (fid, hair, rid, time.time()))
     _action("rate", rid)
     pipeline.drop_preview(pid)  # a rated photo does not need the calibration preview any more
     _maybe_retrain()
@@ -572,9 +594,11 @@ def calib_rate(body: dict = Body(...)):
 @app.post("/api/calib/compare")
 def calib_compare(body: dict = Body(...)):
     a, b, res = int(body["a"]), int(body["b"]), str(body["result"])
-    if res not in ("a", "b", "eq"):
-        raise HTTPException(400, "result must be a, b or eq")
-    rid = db.ex("INSERT INTO comparisons(face_a,face_b,result,created) VALUES(?,?,?,?)", (a, b, res, time.time())).lastrowid
+    kind = str(body.get("kind") or "overall")
+    if res not in ("a", "b", "eq") or kind not in ("overall", "hair"):
+        raise HTTPException(400, "result must be a, b or eq; kind overall or hair")
+    rid = db.ex("INSERT INTO comparisons(face_a,face_b,result,created,kind) VALUES(?,?,?,?,?)",
+                (a, b, res, time.time(), kind)).lastrowid
     _action("compare", rid)
     _maybe_retrain()
     return {"ok": True, "model": ranking.quality()}
@@ -594,10 +618,12 @@ def calib_undo():
         return {"ok": False}
     table = {"rate": "ratings", "compare": "comparisons", "skip": "skips"}[r["kind"]]
     db.ex(f"UPDATE {table} SET active=0 WHERE id=?", (r["row_id"],))
+    if r["kind"] == "rate":
+        db.ex("UPDATE hair_tags SET active=0 WHERE rating_id=?", (r["row_id"],))
     db.ex("DELETE FROM actions WHERE id=?", (r["id"],))
     if r["kind"] == "compare":
-        c = db.q1("SELECT face_a, face_b FROM comparisons WHERE id=?", (r["row_id"],))
-        return {"ok": True, "redo": {"kind": "pair", "a": _item(c[0]), "b": _item(c[1])}}
+        c = db.q1("SELECT face_a, face_b, COALESCE(kind,'overall') FROM comparisons WHERE id=?", (r["row_id"],))
+        return {"ok": True, "redo": {"kind": "hairpair" if c[2] == "hair" else "pair", "a": _item(c[0]), "b": _item(c[1])}}
     fid = db.val(f"SELECT face_id FROM {table} WHERE id=?", (r["row_id"],))
     return {"ok": True, "redo": {"kind": "rate", "item": _item(fid)}}
 

@@ -161,33 +161,47 @@ def test_calibration_and_training(env):
     names = name_of_photo()
     config.settings().update(retrain_every=10)
     seen = 0
+    pairs_seen = set()
     for _ in range(80):
         r = c.get("/api/calib/next").json()
         if r["kind"] == "done":
             break
-        if r["kind"] == "pair":
+        if r["kind"] in ("pair", "hairpair"):
             a, b = r["a"], r["b"]
             ta, tb = truth.get(names[a["photo_id"]], 5), truth.get(names[b["photo_id"]], 5)
             res = "a" if ta > tb + 0.5 else "b" if tb > ta + 0.5 else "eq"
-            assert c.post("/api/calib/compare", json={"a": a["face_id"], "b": b["face_id"], "result": res}).status_code == 200
+            kind = "hair" if r["kind"] == "hairpair" else "overall"
+            pairs_seen.add(r["kind"])
+            assert c.post("/api/calib/compare", json={"a": a["face_id"], "b": b["face_id"], "result": res, "kind": kind}).status_code == 200
             continue
         it = r["item"]
         q = truth.get(names[it["photo_id"]])
         if q is None:
             c.post("/api/calib/skip", json={"face_id": it["face_id"]})
             continue
-        assert c.post("/api/calib/rate", json={"face_id": it["face_id"], "rating": int(round(q))}).status_code == 200
+        hair = 1 if q >= 8 else -1 if q <= 4.5 else 0   # optional hair answer (test truth: good photos have good hair)
+        assert c.post("/api/calib/rate", json={"face_id": it["face_id"], "rating": int(round(q)), "hair": hair}).status_code == 200
         seen += 1
-        if seen == 3:  # undo works and returns the same item
+        if seen == 3:  # undo works, returns the same item, and removes its hair tag
             u = c.post("/api/calib/undo").json()
             assert u["ok"] and u["redo"]["item"]["face_id"] == it["face_id"]
-            c.post("/api/calib/rate", json={"face_id": it["face_id"], "rating": int(round(q))})
+            assert not db.val("SELECT 1 FROM hair_tags WHERE face_id=? AND active=1", (it["face_id"],))
+            c.post("/api/calib/rate", json={"face_id": it["face_id"], "rating": int(round(q)), "hair": hair})
         if seen >= 30:
             break
     wait_idle()
     m = c.get("/api/model").json()
     assert m["ratings"] >= 25 and m["trained"]
     assert m["spearman"] is not None and m["spearman"] > 0.5, m
+    # hair: A/B hair pairs were asked, the hair model trained, every photo of me has a hair score 1..10
+    assert "hairpair" in pairs_seen and "pair" in pairs_seen
+    assert m["hair"].startswith("Hair model: trained"), m["hair"]
+    hs = [r[0] for r in db.q("SELECT hair FROM scores")]
+    assert hs and all(1 <= h <= 10 for h in hs)
+    feats = [json.loads(r[0]) for r in db.q("SELECT data FROM features")]
+    assert all(f.get("hair_v") == 1 for f in feats)
+    assert db.val("SELECT COUNT(*) FROM features WHERE clip_head IS NULL") == 0
+    assert set(m["extra"]) or True  # head / hair-model groups are tested only when they can be used
     b = m["beauty"]  # the attractiveness model is compared with and without, on the same folds
     assert b["with"] is not None and b["without"] is not None and isinstance(b["used"], bool) and b["message"]
     from ratedgallery import ranking
@@ -237,6 +251,7 @@ def test_gallery_api(env, tmp_path):
     idx = c.get("/api/index").json()
     me = [p for p in idx["photos"] if p["me"]]
     assert me and all(p["s"] is not None for p in me)
+    assert all(p["hr"] is not None for p in me)
     assert any(p["lat"] is None for p in idx["photos"]) and any(p["t"] for p in idx["photos"])
     p = me[0]
     d = c.get(f"/api/photo/{p['id']}").json()

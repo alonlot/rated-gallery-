@@ -65,9 +65,14 @@ CREATE INDEX IF NOT EXISTS scores_photo ON scores(photo_id);
 CREATE TABLE IF NOT EXISTS previews(photo_id INTEGER PRIMARY KEY, path TEXT, bytes INTEGER, used REAL);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS photo_vec(photo_id INTEGER PRIMARY KEY, emb BLOB);
+CREATE TABLE IF NOT EXISTS hair_tags(id INTEGER PRIMARY KEY, face_id INTEGER, tag INTEGER, rating_id INTEGER,
+  created REAL, active INTEGER DEFAULT 1);
 """
 
-MIGRATIONS = ["ALTER TABLE scores ADD COLUMN score_p REAL"]
+MIGRATIONS = ["ALTER TABLE scores ADD COLUMN score_p REAL",
+              "ALTER TABLE features ADD COLUMN clip_head BLOB",
+              "ALTER TABLE comparisons ADD COLUMN kind TEXT DEFAULT 'overall'",
+              "ALTER TABLE scores ADD COLUMN hair REAL"]
 
 _local = threading.local()
 _db_path: Path | None = None

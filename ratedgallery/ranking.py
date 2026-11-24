@@ -14,7 +14,7 @@ import numpy as np
 from . import config, db
 
 log = logging.getLogger("ratedgallery.ranking")
-LAYOUT = 3  # change when the feature layout changes; old models are then ignored
+LAYOUT = 4  # change when the feature layout changes; old models are then ignored
 
 HAND = [
     ("eye_open", "Eyes open"), ("eye_asym", "One eye more closed"), ("smile", "Smile"),
@@ -28,13 +28,20 @@ HAND = [
     ("emb_norm", "Face detail (identity model)"), ("me_sim", "Looks like my references"),
     ("iqa", "Image quality (TOPIQ)"), ("mp_ok", "Face landmarks found"),
     ("beauty", "General attractiveness model"),
+    ("hair_present", "Hair visible"), ("hair_area", "Hair volume"), ("hair_rough", "Messy hair outline"),
+    ("hair_over_face", "Hair over the face"), ("hair_lr", "Hair pushed to one side"),
 ]
+HAIR_KEYS = ["hair_present", "hair_area", "hair_rough", "hair_over_face", "hair_lr"]
 HAND_KEYS = [k for k, _ in HAND]
 BEAUTY_COL = HAND_KEYS.index("beauty")
-BINARY_LABELS = {"front": ("Front camera (selfie)", "Rear camera"), "mp_ok": ("Face landmarks found", "Face landmarks not found")}
+BINARY_LABELS = {"front": ("Front camera (selfie)", "Rear camera"), "mp_ok": ("Face landmarks found", "Face landmarks not found"),
+                 "hair_present": ("Hair visible", "Little hair visible")}
 MIN_GAIN = 0.01  # the attractiveness model is used only if it improves held-out Spearman by this much
 LABEL = dict(HAND)
-N_PCA_FACE, N_PCA_FULL = 16, 8
+N_PCA_FACE, N_PCA_FULL, N_PCA_HEAD = 16, 8, 8
+OPTIONAL = ("beauty", "head", "hair_model")  # input groups kept only if they improve held-out Spearman
+GROUP_LABEL = {"beauty": "General attractiveness model", "head": "Hair and head look (learned)",
+               "hair_model": "Hair model (my hair answers)"}
 PRIOR_W = {"eye_open": 1.0, "eye_asym": -0.5, "smile": 0.5, "smile2": -0.2, "sharp": 0.8, "face_mean_dev": -0.6,
            "clip_hi": -0.4, "clip_lo": -0.3, "yaw_abs": -0.7, "pitch_abs": -0.4, "roll_abs": -0.2, "iqa": 0.5,
            "face_size": 0.2, "squint": -0.2, "brow_down": -0.2, "det": 0.2}
@@ -53,7 +60,8 @@ def hand_vector(f: dict) -> list:
             f.get("clip_hi", 0.0), f.get("clip_lo", 0.0), f.get("bg_contrast", 0.0),
             float(np.log(max(f.get("face_frac", 1e-4), 1e-5))),
             {"front": 1.0, "rear": 0.0}.get(f.get("facing"), 0.5), f.get("det", 0.8), f.get("emb_norm", 20.0),
-            f.get("me_sim", 0.5), f.get("iqa", 0.5), f.get("mp_ok", 1.0), f.get("beauty", float("nan"))]
+            f.get("me_sim", 0.5), f.get("iqa", 0.5), f.get("mp_ok", 1.0), f.get("beauty", float("nan"))] + \
+        [f.get(k, float("nan")) for k in HAIR_KEYS]
 
 
 # ---------------------------------------------------------------- library
@@ -62,7 +70,7 @@ class Library:
     """All my primary faces that have features."""
 
     def __init__(self):
-        rows = db.q("""SELECT f.face_id, f.photo_id, f.data, f.clip_face, f.clip_full, p.burst
+        rows = db.q("""SELECT f.face_id, f.photo_id, f.data, f.clip_face, f.clip_full, p.burst, f.clip_head
                        FROM features f JOIN photos p ON p.me_face=f.face_id AND p.id=f.photo_id
                        WHERE p.missing=0 AND p.stage2=1 ORDER BY f.face_id""")
         self.face = np.array([r[0] for r in rows], dtype=np.int64)
@@ -72,6 +80,13 @@ class Library:
         self.H = np.array([hand_vector(f) for f in self.feat], dtype=np.float64).reshape(-1, len(HAND))
         self.CF = np.frombuffer(b"".join(r[3] for r in rows), np.float32).reshape(-1, 512).astype(np.float64) if rows else np.zeros((0, 512))
         self.CA = np.frombuffer(b"".join(r[4] for r in rows), np.float32).reshape(-1, 512).astype(np.float64) if rows else np.zeros((0, 512))
+        CH = np.full((len(rows), 512), np.nan)
+        for i, r in enumerate(rows):
+            if r[6] is not None:
+                CH[i] = np.frombuffer(r[6], np.float32)
+        ok = ~np.isnan(CH[:, 0])
+        CH[~ok] = CH[ok].mean(0) if ok.any() else 0.0
+        self.CH, self.has_head = CH, bool(ok.sum() >= 4)
         self.pos = {int(f): i for i, f in enumerate(self.face)}
 
     def __len__(self):
@@ -106,16 +121,30 @@ def fit_transform(lib: Library):
     tf["mu"], tf["sd"] = H.mean(0), H.std(0) + 1e-6
     tf["pf"] = _pca(lib.CF, N_PCA_FACE) if len(lib) >= 4 else None
     tf["pa"] = _pca(lib.CA, N_PCA_FULL) if len(lib) >= 4 else None
+    tf["ph"] = _pca(lib.CH, N_PCA_HEAD) if len(lib) >= 4 and lib.has_head else None
+    tf["hair"] = None
     return tf, transform(tf, lib)
 
 
 def transform(tf, lib: Library):
+    """Columns: hand values | face PCA | photo PCA | head PCA | hair model (always present, zeros when unused)."""
     H = np.where(np.isnan(lib.H), tf["fill"], lib.H)
     parts = [(H - tf["mu"]) / tf["sd"]]
     if tf.get("pf") is not None:
         parts.append(_pca_apply(tf["pf"], lib.CF))
         parts.append(_pca_apply(tf["pa"], lib.CA))
-    return np.hstack(parts)
+    parts.append(_pca_apply(tf["ph"], lib.CH) if tf.get("ph") is not None else np.zeros((len(lib), N_PCA_HEAD)))
+    X = np.hstack(parts + [np.zeros((len(lib), 1))])
+    if tf.get("hair"):
+        hr = X[:, tf["hair"]["idx"]] @ tf["hair"]["w"] + tf["hair"]["b"]
+        X[:, -1] = (hr - tf["hair"]["mu"]) / tf["hair"]["sd"]
+    return X
+
+
+def group_cols(tf, ncols):
+    nh = len(HAND)
+    head0 = ncols - 1 - N_PCA_HEAD
+    return {"beauty": [BEAUTY_COL], "head": list(range(head0, head0 + N_PCA_HEAD)), "hair_model": [ncols - 1]}
 
 
 def feature_groups(tf):
@@ -123,6 +152,8 @@ def feature_groups(tf):
     if tf.get("pf") is not None:
         names += ["Overall look of my face (learned)"] * len(tf["pf"]["comp"])
         names += ["Scene and style of the photo (learned)"] * len(tf["pa"]["comp"])
+    names += [GROUP_LABEL["head"]] * N_PCA_HEAD
+    names += [GROUP_LABEL["hair_model"]]
     return names
 
 
@@ -135,12 +166,23 @@ def current_ratings():
                AND (r2.created > r.created OR (r2.created = r.created AND r2.id > r.id)))""")}
 
 
-def current_pairs():
-    return [(r[0], r[1], r[2]) for r in db.q("SELECT face_a, face_b, result FROM comparisons WHERE active=1")]
+def current_pairs(kind="overall"):
+    return [(r[0], r[1], r[2]) for r in db.q("SELECT face_a, face_b, result FROM comparisons WHERE active=1 "
+                                             "AND COALESCE(kind,'overall')=?", (kind,))]
+
+
+def current_hair_tags():
+    """Newest active hair tag per face: +1 hair good, -1 hair bad."""
+    return {r[0]: r[1] for r in db.q("""SELECT t.face_id, t.tag FROM hair_tags t WHERE t.active=1 AND NOT EXISTS
+              (SELECT 1 FROM hair_tags t2 WHERE t2.face_id=t.face_id AND t2.active=1 AND t2.id > t.id)""")}
 
 
 def label_counts():
     return len(current_ratings()), len(current_pairs())
+
+
+def all_label_count():
+    return sum(label_counts()) + len(current_hair_tags()) + len(current_pairs("hair"))
 
 
 # ---------------------------------------------------------------- model
@@ -221,25 +263,36 @@ def train(prog=None):
     if len(ridx) < 8:
         return None
     tf, X = fit_transform(lib)
+    tf["hair"] = fit_hair(X, lib)
+    X = transform(tf, lib)
     if prog:
-        prog.set_phase("Training my model", 4)
-    full = np.ones(X.shape[1], dtype=bool)
-    nob = full.copy()
-    nob[BEAUTY_COL] = False
-    sp_with = sp_without = oof_with = oof_without = None
+        prog.set_phase("Training my model", 2 + len(OPTIONAL))
+    cols = group_cols(tf, X.shape[1])
+    usable = {"beauty": True, "head": tf.get("ph") is not None, "hair_model": tf["hair"] is not None}
+    mask = np.ones(X.shape[1], dtype=bool)
+    for g in OPTIONAL:
+        mask[cols[g]] = False
+    tested = {g: {"used": False, "with": None, "without": None} for g in OPTIONAL}
+    oof = sp = None
     if len(ridx) >= 10:
-        # same folds (same seed) for both, so the comparison is fair
-        oof_without = _cv(X[:, nob], ridx, y, pairs, ALPHAS, inner=True)
-        sp_without = _spearman(oof_without, y)
+        # each optional group is added only if it improves held-out Spearman (same folds for a fair comparison)
+        oof = _cv(X[:, mask], ridx, y, pairs, ALPHAS, inner=True)
+        sp = _spearman(oof, y)
         if prog:
             prog.step()
-        oof_with = _cv(X, ridx, y, pairs, ALPHAS, inner=True)
-        sp_with = _spearman(oof_with, y)
-    if prog:
-        prog.step()
-    use_beauty = sp_with is not None and sp_without is not None and sp_with >= sp_without + MIN_GAIN
-    mask = full if use_beauty else nob
-    oof, sp = (oof_with, sp_with) if use_beauty else (oof_without, sp_without)
+        for g in OPTIONAL:
+            if not usable[g]:
+                continue
+            m2 = mask.copy()
+            m2[cols[g]] = True
+            o2 = _cv(X[:, m2], ridx, y, pairs, ALPHAS, inner=True)
+            s2 = _spearman(o2, y)
+            tested[g] = {"used": False, "with": s2, "without": sp}
+            if s2 is not None and sp is not None and s2 >= sp + MIN_GAIN:
+                mask, oof, sp = m2, o2, s2
+                tested[g]["used"] = True
+            if prog:
+                prog.step()
     Xm = X[:, mask]
     alpha = _best_alpha(Xm, ridx, y, pairs, ALPHAS)
     if prog:
@@ -256,13 +309,16 @@ def train(prog=None):
         full_w = np.zeros(X.shape[1])
         full_w[mask] = bw
         boot.append((full_w, bb))
+    use_beauty = tested["beauty"]["used"]
+    sp_with, sp_without = tested["beauty"]["with"], tested["beauty"]["without"]
     raw = X @ w + b
     m = {"layout": LAYOUT, "tf": tf, "w": w, "b": b, "alpha": alpha, "boot_w": np.array([x[0] for x in boot]),
          "boot_b": np.array([x[1] for x in boot]), "ratings_sorted": np.sort(y), "raw_sorted": np.sort(raw),
          "spearman": sp, "n_labels": len(ridx), "n_pairs": len(pairs),
-         "beauty": {"used": bool(use_beauty), "with": sp_with, "without": sp_without}}
+         "beauty": {"used": bool(use_beauty), "with": sp_with, "without": sp_without}, "optional": tested}
     if oof is not None:
         m["oof"] = [(int(lib.face[i]), float(yy), float(o)) for i, yy, o in zip(ridx, y, oof)]
+    db.kv_set("labels_at_train", all_label_count())
     with db.tx() as c:
         c.execute("UPDATE models SET current=0")
         c.execute("INSERT INTO models(created,n_labels,n_pairs,spearman,blob,current) VALUES(?,?,?,?,?,1)",
@@ -271,6 +327,43 @@ def train(prog=None):
         prog.step()
     log.info("Trained: %d ratings, %d pairs, alpha=%s, spearman=%s", len(ridx), len(pairs), alpha, sp)
     return m
+
+
+HAIR_MIN_TAGS, HAIR_MIN_LABELS = 6, 8
+
+
+def fit_hair(X, lib):
+    """Small hair model from my hair answers (tags +1/-1 and hair A/B pairs), on hair values + head view."""
+    tags = current_hair_tags()
+    tpos = [(lib.pos[f], t) for f, t in tags.items() if f in lib.pos]
+    hp = [(lib.pos[a], lib.pos[b], {"a": 1, "b": -1, "eq": 0}.get(r, 0)) for a, b, r in current_pairs("hair")
+          if a in lib.pos and b in lib.pos]
+    signs = {t for _, t in tpos}
+    if not ((len(tpos) >= HAIR_MIN_TAGS and signs == {1, -1}) or (len(tpos) + len(hp) >= HAIR_MIN_LABELS and hp)):
+        return None
+    nh = len(HAND)
+    head0 = X.shape[1] - 1 - N_PCA_HEAD
+    idx = [HAND_KEYS.index(k) for k in HAIR_KEYS] + list(range(head0, head0 + N_PCA_HEAD))
+    Xh = X[:, idx]
+    ridx = np.array([i for i, _ in tpos], dtype=np.int64)
+    yv = np.array([float(t) for _, t in tpos])
+    w, b = _solve(Xh, yv, ridx, hp, 10.0, margin=1.0)
+    if not len(ridx):
+        b = 0.0
+    raw = Xh @ w + b
+    return {"idx": idx, "w": w, "b": b, "mu": float(raw.mean()), "sd": float(raw.std() + 1e-9),
+            "sorted": np.sort(raw), "n_tags": len(tpos), "n_pairs": len(hp)}
+
+
+def hair_scores(tf, lib):
+    """Hair 1..10 (percentile among my photos) from the hair model, or None."""
+    h = tf.get("hair") if tf else None
+    if not h:
+        return None
+    X = transform(tf, lib)
+    raw = X[:, h["idx"]] @ h["w"] + h["b"]
+    p = np.interp(raw, h["sorted"], np.linspace(0, 1, len(h["sorted"]))) if len(h["sorted"]) > 1 else np.full(len(raw), 0.5)
+    return 1 + 9 * p
 
 
 def current_model():
@@ -382,6 +475,7 @@ def score_all(prog=None):
           db.q(f"SELECT id, taken_local FROM photos WHERE id IN ({','.join(map(str, lib.photo.tolist())) or '0'})")}
     years = np.array([yr.get(int(pid), -1) for pid in lib.photo])
     sp = period_scores(raw, years, m["ratings_sorted"] if m is not None else None)
+    hs = hair_scores(m["tf"], lib) if m is not None else None
     contrib = X * w * k
     nh = len(HAND)
     rows = []
@@ -399,11 +493,11 @@ def score_all(prog=None):
         top = [[a, round(b, 2)] for a, b in top if abs(b) >= 0.05][:8]
         conf = quality_conf(lib.feat[i]) * (0.6 + 0.4 * float(mfac[i]))  # face quality first, model doubt second
         rows.append((int(lib.face[i]), int(lib.photo[i]), float(raw[i]), float(scores[i]), round(conf, 3),
-                     prior, mid, json.dumps(top), float(sp[i])))
+                     prior, mid, json.dumps(top), float(sp[i]), float(hs[i]) if hs is not None else None))
     with db.tx() as c:
         c.execute("DELETE FROM scores")
-        c.executemany("INSERT INTO scores(face_id,photo_id,raw,score,conf,prior,model_id,contrib,score_p) "
-                      "VALUES(?,?,?,?,?,?,?,?,?)", rows)
+        c.executemany("INSERT INTO scores(face_id,photo_id,raw,score,conf,prior,model_id,contrib,score_p,hair) "
+                      "VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
     return len(rows)
 
 
@@ -420,11 +514,11 @@ def train_job(prog):
 
 
 def labels_since_model():
-    r = db.q1("SELECT n_labels, n_pairs FROM models WHERE current=1 ORDER BY id DESC LIMIT 1")
-    nr, npairs = label_counts()
-    if r is None:
-        return nr + npairs
-    return max(0, (nr + npairs) - (r[0] + r[1]))
+    """New answers (ratings, A/B, hair tags, hair A/B) since the last training."""
+    total = all_label_count()
+    if current_model()[1] is None:
+        return total
+    return max(0, total - int(db.kv_get("labels_at_train", 0) or 0))
 
 
 def quality():
@@ -453,7 +547,17 @@ def quality():
                              f"(Spearman {b['with']:.2f} with it, {b['without']:.2f} without it)."))
     elif m is not None:
         b = {"used": False, "message": "General attractiveness model: not used yet. It is tested when you have 10 or more ratings."}
+    extra = []
+    for g in ("head", "hair_model"):
+        t = ((m or {}).get("optional") or {}).get(g)
+        if t and t.get("with") is not None:
+            extra.append(f"{GROUP_LABEL[g]}: " + ("used." if t["used"] else "not used (it does not improve your model)."))
+    h = ((m or {}).get("tf") or {}).get("hair")
+    nt, nhp = len(current_hair_tags()), len(current_pairs("hair"))
+    hair_msg = (f"Hair model: trained from {h['n_tags']} hair tags and {h['n_pairs']} hair comparisons." if h else
+                f"Hair model: needs {HAIR_MIN_TAGS} hair tags (good and bad) or {HAIR_MIN_LABELS} hair answers; you have {nt + nhp}.")
     return {"ratings": nr, "pairs": npairs, "spearman": sp, "message": msg, "level": level, "beauty": b,
+            "extra": extra, "hair": hair_msg, "hair_tags": nt, "hair_pairs": nhp,
             "trained": bool(m), "library": db.val("SELECT COUNT(*) FROM scores", default=0)}
 
 
@@ -552,13 +656,13 @@ def select_batch(n=10, exclude=(), seed=None):
     return [int(lib.face[i]) for i in picked]
 
 
-def select_pair(seed=None):
+def select_pair(seed=None, kind="overall"):
     """Two photos of me with close predicted scores, from different bursts, not compared before."""
     rows = db.q("SELECT s.face_id, s.score, p.burst FROM scores s JOIN photos p ON p.id=s.photo_id")
     if len(rows) < 2:
         return None
     rng = np.random.default_rng(seed if seed is not None else int(time.time() * 1000) % 2**32)
-    done = {(a, b) for a, b, _ in current_pairs()} | {(b, a) for a, b, _ in current_pairs()}
+    done = {(a, b) for a, b, _ in current_pairs(kind)} | {(b, a) for a, b, _ in current_pairs(kind)}
     for _ in range(20):
         a = rows[int(rng.integers(len(rows)))]
         others = [rows[int(i)] for i in rng.choice(len(rows), min(200, len(rows)), replace=False)]

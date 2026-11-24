@@ -27,6 +27,7 @@ FILES = {
     "search_dense": "mclip_dense.f32",
     "search_vocab": "mclip_vocab.txt",
     "landmarker": "face_landmarker.task",
+    "hair": "hair_segmenter.tflite",
 }
 
 DEVICES: dict[str, dict] = {}
@@ -338,3 +339,60 @@ def timeit(fn, n=5):
     for _ in range(n):
         fn()
     return (time.perf_counter() - t) / n
+
+
+# ---------------------------------------------------------------- hair (MediaPipe hair segmenter, Apache 2.0, CPU)
+
+def head_box(box):
+    """Square-ish box around the whole head (face box widened, moved up for the hair). Normalized x1,y1,x2,y2."""
+    x1, y1, x2, y2 = box
+    cx, cy, fw, fh = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
+    return [cx - 1.25 * fw, cy - 1.35 * fh, cx + 1.25 * fw, cy + 0.65 * fh]
+
+
+class HairSegmenter:
+    def __init__(self):
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+
+        self.mp = mp
+        opts = vision.ImageSegmenterOptions(
+            base_options=BaseOptions(model_asset_buffer=model_path("hair").read_bytes(), delegate=BaseOptions.Delegate.CPU),
+            running_mode=vision.RunningMode.IMAGE, output_confidence_masks=True, output_category_mask=False)
+        self.seg = vision.ImageSegmenter.create_from_options(opts)
+
+    def mask(self, rgb512: np.ndarray) -> np.ndarray:
+        r = self.seg.segment(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb512)))
+        return r.confidence_masks[-1].numpy_view()[..., 0] > 0.5
+
+
+def hair_measures(mask: np.ndarray) -> dict:
+    """Hair values from a hair mask of the head crop made with head_box() (the face is at a fixed place in it).
+
+    hair_area: hair area / face area. hair_rough: outline length / outline of its convex hull (1 = smooth, more =
+    messy or flyaway). hair_over_face: part of the upper face (forehead, eyes) covered by hair. hair_lr: hair pushed
+    to one side (0 = balanced). Values are NaN when little hair is visible (very short hair, hat): then they do not count.
+    """
+    S = mask.shape[0]
+    # the face box inside the head crop: width 1/2.5 of the crop, from y = 0.35/2.0*1.0 ... see head_box()
+    fx1, fx2 = S * (1.25 - 0.5) / 2.5, S * (1.25 + 0.5) / 2.5
+    fy1, fy2 = S * (1.35 - 0.5) / 2.0, S * (1.35 + 0.5) / 2.0
+    m = mask.copy()
+    m[int(fy2 + 0.1 * (fy2 - fy1)):, :] = False          # below the chin: clothes, not hair
+    face_area = (fx2 - fx1) * (fy2 - fy1)
+    area = float(m.sum())
+    out = {"hair_present": 1.0 if area >= 0.05 * face_area else 0.0}
+    nan = float("nan")
+    if not out["hair_present"]:
+        return {**out, "hair_area": nan, "hair_rough": nan, "hair_over_face": nan, "hair_lr": nan}
+    out["hair_area"] = area / face_area
+    cnts, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    perim = sum(cv2.arcLength(c, True) for c in cnts)
+    hull = cv2.convexHull(np.vstack(cnts))
+    out["hair_rough"] = float(perim / max(cv2.arcLength(hull, True), 1.0))
+    upper = m[int(fy1):int(fy1 + 0.5 * (fy2 - fy1)), int(fx1):int(fx2)]
+    out["hair_over_face"] = float(upper.mean()) if upper.size else 0.0
+    cx = S / 2
+    left, right = float(m[:, :int(cx)].sum()), float(m[:, int(cx):].sum())
+    out["hair_lr"] = abs(left - right) / max(left + right, 1.0)
+    return out
