@@ -77,14 +77,30 @@ class Runner:
             self.thread = threading.Thread(target=self._loop, name="task-runner", daemon=True)
             self.thread.start()
 
-    def request(self, name, **kw):
+    def request(self, name, front=False, **kw):
+        """Queue a task. front=True puts it first (for example training after new ratings)."""
         with self.lock:
-            for q in self.queue:
+            for i, q in enumerate(self.queue):
                 if q[0] == name and q[1] == kw:
+                    if front and i:
+                        del self.queue[i]
+                        self.queue.appendleft((name, kw))
                     return False
-            self.queue.append((name, kw))
+            if front:
+                self.queue.appendleft((name, kw))
+            else:
+                self.queue.append((name, kw))
         self.wake.set()
         return True
+
+    def others_waiting(self, name) -> bool:
+        """True if a task other than `name` is queued. Long tasks check this to make room for it."""
+        with self.lock:
+            return any(q[0] != name for q in self.queue)
+
+    def pending(self, name) -> bool:
+        with self.lock:
+            return (self.current is not None and self.current.name == name) or any(q[0] == name for q in self.queue)
 
     def cancel(self):
         with self.lock:

@@ -17,6 +17,23 @@ EDIT_SUFFIXES = ("-edited", "-bearbeitet", "-modifié", "-modificado", "-modific
                  "-edytowane", "-redigeret", "-muokattu", "-editado", "-ערוך")
 DUP_RE = re.compile(r"^(.*)\((\d+)\)$")
 JSON_DUP_RE = re.compile(r"\((\d+)\)\.json$", re.I)
+# camera file names with the capture time: IMG_20230310_150000.jpg, PXL_20240707_190000123.jpg, 20230310_150000.jpg,
+# Screenshot_20230310-150000.png, signal-2023-03-10-150000.jpg is not matched (dashes in the date)
+NAME_TIME_RE = re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})[_\-T. ]?(\d{2})(\d{2})(\d{2})\d{0,3}(?!\d)")
+
+
+def time_from_name(name: str | None) -> datetime | None:
+    """Local capture time from a camera-style file name, or None."""
+    m = NAME_TIME_RE.search(Path(name or "").stem)
+    if not m:
+        return None
+    y, mo, d, hh, mm, ss = map(int, m.groups())
+    if not 1990 <= y <= datetime.now().year + 1:
+        return None
+    try:
+        return datetime(y, mo, d, hh, mm, ss)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------- Takeout sidecars
@@ -179,8 +196,10 @@ def facing_from_lens(lens: str | None) -> str:
     return "unknown"
 
 
-def merge(exif_info: dict, sidecar: dict, taken_hint: float | None = None) -> dict:
-    """Combine. Sidecar first for date (UTC moment) and GPS; EXIF gives local time and camera."""
+def merge(exif_info: dict, sidecar: dict, taken_hint: float | None = None, name: str | None = None) -> dict:
+    """Combine. Sidecar first for date (UTC moment) and GPS; EXIF gives local time and camera.
+    Without any of these, the capture time comes from a camera-style file name (IMG_20230310_150000.jpg).
+    Without a capture time a copy could be matched with the wrong photo (see pipeline._handle_scan)."""
     m = {k: exif_info.get(k) for k in ("make", "model", "lens", "focal", "focal35", "orientation")}
     local = exif_info.get("exif_local")
     ts = sidecar.get("taken_ts")
@@ -190,6 +209,8 @@ def merge(exif_info: dict, sidecar: dict, taken_hint: float | None = None) -> di
         ts = local.replace(tzinfo=timezone.utc).timestamp() - sign * (int(hh) * 3600 + int(mm) * 60)
     if ts is None and taken_hint:
         ts = float(taken_hint)  # phone: MediaStore DATE_TAKEN (UTC)
+    if ts is None and local is None:
+        local = time_from_name(name)
     if ts is None and local is not None:
         ts = time.mktime(local.timetuple()) + local.microsecond / 1e6  # PC time zone: best guess
     if local is None and ts is not None:

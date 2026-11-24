@@ -15,15 +15,22 @@
 ### Tested
 - Linux container, CPU only: 24 pytest tests (unit + end-to-end on public-domain NASA portraits), Node checks of the gallery logic, 102 Android JVM unit tests, Android lint, a full install from zero.
 - Also run on a 400-photo NASA library (screenshots).
+- Windows 11, Ryzen 5 5600X + RX 6600 XT: `install.bat` from zero (Python 3.11.9), 26 pytest tests pass, `start.bat`.
+  All models run on DirectML. Measured: scan about 1,900 photos/min (1,500 before the speed work), analysis of photos of me about 850/min.
+  MEBeauty at install: correlation 0.807 (all) and 0.780 (Caucasian men), SCUT-FBP5500 0.234 and 0.065.
+- Attractiveness display and "Attractiveness" sort checked in a browser with the test library.
 
 ### NOT tested yet
-- Windows, `install.bat` and `start.bat` on Windows, DirectML on the RX 6600 XT.
 - The phone app on a real phone (no emulator was available).
 - Real photos and real ratings.
 
-### In progress
+### Done since the last status
 - **MEBeauty attractiveness model.** `install.bat` trains it on the PC from the MEBeauty dataset (`ratedgallery/beauty_train.py`). It compares it with SCUT-FBP5500 on the same test faces (all faces, and Caucasian men) and keeps it only if it is better. The install log shows the result. MEBeauty terms: non-commercial academic research only. Private use only; never in an app that is sold.
-- **Separate attractiveness display.** The detail view shows "General attractiveness X/10" and the difference from my own average, plus a sort option "Attractiveness". The code is done but was not checked in a browser.
+- **Separate attractiveness display.** The detail view shows "General attractiveness X/10" and the difference from my own average, plus a sort option "Attractiveness". Checked in a browser. Note: on the test library the head gives blurred faces
+  higher values too (the top photo was a blurred variant), like SCUT-FBP5500.
+- **DirectML fix.** ArcFace failed on DirectML for batches > 1 (its output batch is declared as 1), and the failed
+  session crashed the next DirectML call. Now each model is checked in a child process with fixed shapes
+  (`ratedgallery/dml_probe.py`), and ArcFace has one session per batch size.
 
 - **Hair.** Hair measurements (MediaPipe Hair Segmenter), a "hair and head" view (CLIP), optional hair tags in Calibrate
   (H / J), a hair A/B question about every 10th item, and a small hair model. Tested on CPU here. Photos analyzed

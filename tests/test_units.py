@@ -195,3 +195,132 @@ def test_hair_measures():
     clothes = np.zeros((512, 512), bool)
     clothes[500:, :] = True                         # below the chin does not count as hair (long hair beside the face does)
     assert hair_measures(clothes)["hair_present"] == 0
+def test_dml_check_failure_uses_cpu_and_is_cached(tmp_path, monkeypatch):
+    """A failed DirectML check (child process) gives a CPU session; DirectML is never tried in this process."""
+    import shutil
+
+    from ratedgallery import config, models
+
+    src = config.MODELS / models.FILES["scrfd"]
+    if not src.exists():
+        pytest.skip("models missing")
+    shutil.copy(src, tmp_path / src.name)
+    monkeypatch.setattr(config, "MODELS", tmp_path)
+    config.reset_settings_for_tests(tmp_path / "settings.json")
+    monkeypatch.setattr(models, "_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    calls = []
+
+    def fake_probe(name, feeds, dims):
+        calls.append((name, feeds, dims))
+        return {"ok": False, "error": "DirectML check crashed (exit code 0xc0000005)"}
+
+    monkeypatch.setattr(models, "_run_probe", fake_probe)
+    models.reset()
+    try:
+        det = models.SCRFD()
+        assert det.sess.get_providers() == ["CPUExecutionProvider"]
+        assert models.DEVICES["scrfd"]["device"] == "CPU"
+        assert "crashed" in models.DEVICES["scrfd"]["error"]
+        models.reset()
+        models.SCRFD()
+        assert calls == [("scrfd", {"input.1": [1, 3, 640, 640]}, {})]   # second start: result from dml_probe.json
+    finally:
+        models.reset()
+
+
+def test_arcface_runs_on_directml_with_fixed_batch():
+    """ArcFace (w600k_r50) declares its output batch as 1; with a free batch size its last BatchNormalization
+    fails on DirectML for batches > 1. With the batch size fixed it must work (only on PCs with DirectML)."""
+    import onnxruntime as ort
+
+    from ratedgallery import config, models
+
+    if "DmlExecutionProvider" not in ort.get_available_providers():
+        pytest.skip("no DirectML on this PC")
+    if not (config.MODELS / models.FILES["arcface"]).exists():
+        pytest.skip("models missing")
+    res = models._run_probe("arcface", {"input.1": [8, 3, 112, 112]}, {"None": 8})
+    assert res["ok"], res
+
+
+def test_capture_time_from_file_name():
+    from datetime import datetime
+
+    assert metadata.time_from_name("IMG_20230310_150000.jpg") == datetime(2023, 3, 10, 15, 0, 0)
+    assert metadata.time_from_name("IMG_20230310_150000_me_0_orig(1).jpg") == datetime(2023, 3, 10, 15, 0, 0)
+    assert metadata.time_from_name("PXL_20240707_190000123.jpg") == datetime(2024, 7, 7, 19, 0, 0)
+    assert metadata.time_from_name("Screenshot_20230310-150000.png") == datetime(2023, 3, 10, 15, 0, 0)
+    assert metadata.time_from_name("20230310_150000.jpg") == datetime(2023, 3, 10, 15, 0, 0)
+    for bad in ("IMG_1234.jpg", "IMG_20231310_150000.jpg", "IMG_18000101_000000.jpg", "123420230310150000.jpg", None):
+        assert metadata.time_from_name(bad) is None, bad
+    # file name time only when nothing better exists
+    m = metadata.merge({}, {}, None, "IMG_20230310_150000.jpg")
+    assert m["taken_local"] == "2023-03-10T15:00:00"
+    assert metadata.merge({}, {"taken_ts": 1_000_000_000.0}, None, "IMG_20230310_150000.jpg")["taken_ts"] == 1_000_000_000.0
+    assert metadata.merge({}, {}, 1_600_000_000.0, "IMG_20230310_150000.jpg")["taken_ts"] == 1_600_000_000.0
+
+
+def test_hash_index_takes_capture_time_of_merged_copy(tmp_path):
+    """A photo without capture time gets one from a merged copy; later files are compared with that time."""
+    from ratedgallery import db
+    from ratedgallery.pipeline import HashIndex
+
+    db.set_path(tmp_path / "t.db")
+    h = HashIndex()
+    h.add(1, "f7ef6002393d184b", 600, 423, None, None)
+    h.fill_ts(1, 1678460400.0)
+    assert h.ts == [1678460400.0]
+    h.fill_ts(1, 1680778800.0)            # an existing time is not replaced
+    assert h.ts == [1678460400.0]
+
+
+def test_runner_front_and_others_waiting():
+    """Training after new ratings must not wait behind phone-sync scans (they can run for an hour)."""
+    from ratedgallery.tasks import Runner
+
+    r = Runner()
+    assert r.request("scan", list_sources=False)
+    assert not r.others_waiting("scan")
+    r.request("search_index")
+    assert r.request("train", front=True)
+    assert [q[0] for q in r.queue] == ["train", "scan", "search_index"]
+    assert r.others_waiting("scan") and r.pending("train") and not r.pending("export")
+    assert not r.request("search_index", front=True)          # already queued: moved to the front, not added again
+    assert [q[0] for q in r.queue] == ["search_index", "train", "scan"]
+    assert not r.request("scan", list_sources=False)          # merged with the queued scan
+    assert len(r.queue) == 3
+
+
+def test_scan_pauses_for_a_waiting_task(tmp_path, monkeypatch):
+    """While files keep arriving, the scan loop stops after a round when another task waits, and queues itself again."""
+    from ratedgallery import config, db, people, pipeline
+    from ratedgallery.tasks import Progress, Runner
+
+    runner = Runner()                     # not started, so nothing takes the queued tasks during the test
+    monkeypatch.setattr(pipeline, "runner", runner)
+    db.set_path(tmp_path / "t.db")
+    config.reset_settings_for_tests(tmp_path / "settings.json")
+    rounds = []
+
+    class FakePool:
+        def __init__(self, *a, **k): pass
+        def close(self): pass
+
+    monkeypatch.setattr("ratedgallery.workers.Pool", FakePool)
+    monkeypatch.setattr("ratedgallery.models.SCRFD", lambda: None)
+    monkeypatch.setattr("ratedgallery.models.ArcFace", lambda: None)
+    monkeypatch.setattr(pipeline, "count_pass1", lambda: 5)                  # the phone keeps uploading
+    monkeypatch.setattr(pipeline, "pending_pass1", lambda limit=0: [{"id": len(rounds)}])
+    def one_round(*a, **k):
+        rounds.append(1)
+        if len(rounds) == 2:
+            runner.request("train", front=True)                              # a rating arrives during the scan
+    monkeypatch.setattr(pipeline, "run_pass1", one_round)
+    monkeypatch.setattr(people, "me_id", lambda: None)
+    for name in ("cleanup_spool", "infer_facing", "backfill_beauty"):
+        monkeypatch.setattr(pipeline, name, lambda *a, **k: None)
+    monkeypatch.setattr("ratedgallery.ranking.score_all", lambda *a, **k: 0)
+    monkeypatch.setattr("ratedgallery.search.index_job", lambda *a, **k: 0)
+    pipeline.scan_job(Progress("scan"), list_sources=False)
+    assert len(rounds) == 2
+    assert [(q[0], q[1]) for q in runner.queue] == [("train", {}), ("scan", {"list_sources": False})]

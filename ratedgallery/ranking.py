@@ -528,6 +528,12 @@ def quality():
     if nr < 10:
         msg = f"Rate {10 - nr} more photos to train your first model."
         level = "none"
+    elif m is None:
+        from .tasks import runner
+
+        msg = ("Training your model with your ratings. It starts after the current step of the scan."
+               if runner.pending("train") else "Your model is not trained yet. It trains after your next rating.")
+        level = "none"
     elif sp is None:
         msg = "Not enough ratings to measure the quality. Rate 10 more."
         level = "low"

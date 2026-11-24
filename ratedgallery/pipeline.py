@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 from . import config, db, geo, imaging, metadata, people
-from .tasks import Progress
+from .tasks import Progress, runner
 
 log = logging.getLogger("ratedgallery.pipeline")
 ROUND = 400  # files per round; keeps the phone spool small
@@ -139,6 +139,7 @@ class HashIndex:
         self.aspect = [((r[2] or 1) / (r[3] or 1)) for r in rows]
         self.ts = [r[4] for r in rows]
         self.burst = [r[5] for r in rows]
+        self.pos = {pid: i for i, pid in enumerate(self.ids)}
 
     def dist(self, hexh: str):
         if not self.ids:
@@ -152,6 +153,13 @@ class HashIndex:
         self.aspect.append(w / max(h, 1))
         self.ts.append(ts)
         self.burst.append(burst)
+        self.pos[pid] = len(self.ids) - 1
+
+    def fill_ts(self, pid, ts):
+        """A merged copy gave the photo its capture time: later files must be compared with that time."""
+        i = self.pos.get(pid)
+        if ts is not None and i is not None and self.ts[i] is None:
+            self.ts[i] = ts
 
 
 # ---------------------------------------------------------------- pass 1
@@ -186,7 +194,8 @@ def run_pass1(rows, pool, prog: Progress, det, arc, hidx: HashIndex, new_faces: 
         if p is None:
             db.ex("UPDATE files SET status=CASE WHEN status='uploaded' THEN 'new' ELSE status END, attempts=attempts+1 WHERE id=?", (r["id"],))
             continue
-        jobs.append({"file_id": r["id"], "path": str(p), "sidecar": r["sidecar"], "taken_hint": r["taken_hint"]})
+        jobs.append({"file_id": r["id"], "path": str(p), "sidecar": r["sidecar"], "taken_hint": r["taken_hint"],
+                     "name": r["name"]})
     c = db.conn()
     pending_commit = 0
     c.execute("BEGIN IMMEDIATE")
@@ -208,6 +217,8 @@ def run_pass1(rows, pool, prog: Progress, det, arc, hidx: HashIndex, new_faces: 
     except BaseException:
         c.execute("COMMIT")  # keep finished work; the current file stays 'new' and is retried
         raise
+    finally:
+        CROPS.wait()
 
 
 def _scan_task_ref():
@@ -236,6 +247,7 @@ def _handle_scan(c, res, det, arc, hidx: HashIndex, near, burst_bits, burst_s, n
                 break
     if target is not None:
         _merge_duplicate(c, target, fid, res, meta)
+        hidx.fill_ts(target, meta.get("taken_ts"))
         c.execute("UPDATE files SET status='done', photo_id=? WHERE id=?", (target, fid))
         return
     # burst group: similar photo taken a few seconds apart
@@ -319,7 +331,7 @@ def _detect_faces(c, pid, res, det, arc, new_faces):
         t0 = time.perf_counter()
         embs, norms = arc.embed(crops)
         _throttle(t0)
-        pil = Image.fromarray(img)
+        crops_todo = []
         for j, i in enumerate(keep):
             b = np.clip(boxes[i] / [W, H, W, H], 0, 1)
             k = (kps[i] / [W, H]).round(5).tolist()
@@ -328,10 +340,53 @@ def _detect_faces(c, pid, res, det, arc, new_faces):
                             (pid, *map(float, b), float(scores[i]), json.dumps(k), size_px,
                              db.f32(embs[j]), float(norms[j]))).lastrowid
             new_faces.append(fid)
-            imaging.save_jpeg(imaging.square_crop(pil, b, 1.6, 256), face_crop_path(fid), quality=85)
+            crops_todo.append((fid, b))
             if scores[i] >= 0.6 and (b[2] - b[0]) >= 0.03:
                 n_people += 1
+        CROPS.submit(img, crops_todo)
     c.execute("UPDATE photos SET n_faces=?, n_people=? WHERE id=?", (len(keep), n_people, pid))
+
+
+class CropWriter:
+    """Writes the 256 px face crops in background threads, so the main loop (GPU models) does not wait for
+    image conversion, resizing, JPEG encoding and file writes (about 9 ms per photo). Call wait() before the
+    crops are needed."""
+
+    MAX_PENDING = 64
+
+    def __init__(self, threads=2):
+        self.threads = threads
+        self.ex = None
+        self.pending = []
+
+    @staticmethod
+    def _write(img, items):
+        pil = Image.fromarray(img)
+        for fid, b in items:
+            imaging.save_jpeg(imaging.square_crop(pil, b, 1.6, 256), face_crop_path(fid), quality=85)
+
+    def submit(self, img, items):
+        from concurrent.futures import ThreadPoolExecutor
+
+        if self.ex is None:
+            self.ex = ThreadPoolExecutor(self.threads, thread_name_prefix="facecrop")
+        self.pending.append(self.ex.submit(self._write, img, items))
+        while len(self.pending) > self.MAX_PENDING:  # bounded memory if the writers fall behind
+            self._done(self.pending.pop(0))
+
+    @staticmethod
+    def _done(fut):
+        try:
+            fut.result()
+        except Exception as e:  # noqa: BLE001  a missing crop is shown as a placeholder; the scan goes on
+            log.warning("Face crop not saved: %s", e)
+
+    def wait(self):
+        while self.pending:
+            self._done(self.pending.pop(0))
+
+
+CROPS = CropWriter()
 
 
 # ---------------------------------------------------------------- pass 2
@@ -586,6 +641,12 @@ def scan_job(prog: Progress, list_sources: bool = True):
                     run_pass2(pool, prog, CLIP(), IQA())
                     prog.set_phase("Scanning photos", prog.done + count_pass1())
                 cleanup_spool()
+                if runner.others_waiting("scan"):
+                    # While the phone uploads, this loop could run for an hour. Another task waits (for example
+                    # training after new ratings): finish this round, let it run, then the scan goes on.
+                    log.info("Scan pauses for a waiting task; it goes on after it")
+                    runner.request("scan", list_sources=False)
+                    break
         if people.me_id() is not None and pending_pass2():
             if pool is None:
                 pool = ACTIVE_POOL = Pool()

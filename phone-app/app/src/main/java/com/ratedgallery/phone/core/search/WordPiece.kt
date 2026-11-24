@@ -63,8 +63,11 @@ class WordPiece(tokens: List<String>) {
 
         /** Reads the vocab file: UTF-8, one token per line, the line number (from 0) is the id. */
         fun load(file: File): WordPiece {
-            // Split on '\n' only (like the Python reference); a final empty line is not a token.
-            val lines = file.readText(Charsets.UTF_8).split('\n').toMutableList()
+            // Line ends like the Python reference (text mode): "\r\n" and "\r" count as "\n". A PC installed on
+            // Windows wrote the file with "\r\n"; split on '\n' alone, every token kept a '\r' and became [UNK].
+            // A final empty line is not a token.
+            val text = file.readText(Charsets.UTF_8).replace("\r\n", "\n").replace('\r', '\n')
+            val lines = text.split('\n').toMutableList()
             if (lines.isNotEmpty() && lines.last().isEmpty()) lines.removeAt(lines.size - 1)
             return WordPiece(lines)
         }

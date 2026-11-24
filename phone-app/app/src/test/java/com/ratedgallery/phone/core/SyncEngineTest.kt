@@ -56,6 +56,28 @@ class SyncEngineTest {
         assertEquals(setOf(0, 45), uploadTotals.toSet())
     }
 
+    @Test fun longUploadRefreshesTheIndexOnTheWay() = runBlocking {
+        // 45 uploads, each takes 1 minute: the index comes every 3 minutes, and once more at the end
+        val items = (1..45).map { item(it.toString()) }
+        val pc = FakePc().apply { index = """{"version":1,"persons":[],"photos":[{"mid":"1"}]}""" }
+        var saves = 0
+        val e = SyncEngine(
+            api = pc, media = FakeMedia(items), index = IndexStore(tmp.root), isForeground = { false },
+            listener = object : SyncListener {
+                override suspend fun onProgress(phase: String, done: Int, total: Int, message: String) {
+                    if (phase == "upload" && done > 0) clock += 60_000
+                }
+                override suspend fun onIndexSaved() { saves++ }
+            },
+            sleep = { clock += it }, now = { clock },
+        )
+        assertEquals(SyncResult.Done(45, 0, true), e.run(SyncEngine.Mode.FULL))
+        assertEquals(45, pc.uploads.size)
+        assertEquals(15 + 1, pc.calls.count { it == "index" })
+        assertEquals(16, saves)
+        assertEquals("index", pc.calls.last())
+    }
+
     @Test fun nothingToUpload() = runBlocking {
         val pc = FakePc().apply { known.addAll(listOf("1", "2")) }
         val r = engine(pc, FakeMedia(listOf(item("1"), item("2")))).run(SyncEngine.Mode.FULL)

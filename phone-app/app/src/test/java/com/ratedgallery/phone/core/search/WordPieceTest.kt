@@ -55,6 +55,22 @@ class WordPieceTest {
         return WordPiece(list)
     }
 
+    @Test fun vocabWithWindowsLineEndsLoadsLikeUnix() {
+        // a PC installed on Windows wrote mclip_vocab.txt with CR LF line ends; then every token became [UNK]
+        val tokens = ArrayList<String>()
+        repeat(100) { tokens.add("[unused$it]") }
+        tokens.addAll(listOf("[UNK]", "[CLS]", "[SEP]", "river", "sun", "##set"))
+        val lf = "\n"
+        val crlf = "\r\n"
+        val unix = File.createTempFile("vocab", ".txt").apply { deleteOnExit(); writeText(tokens.joinToString(lf) + lf) }
+        val win = File.createTempFile("vocab", ".txt").apply { deleteOnExit(); writeText(tokens.joinToString(crlf) + crlf) }
+        val a = WordPiece.load(unix)
+        val b = WordPiece.load(win)
+        assertEquals(a.size, b.size)
+        assertArrayEquals(longArrayOf(101, 103, 104, 105, 102), b.encode("river sunset"))
+        assertArrayEquals(a.encode("river sunset"), b.encode("river sunset"))
+    }
+
     @Test fun greedyLongestMatchAndUnk() {
         val t = mini("un", "##aff", "##able", "aff", "!", "a")
         // 103=un 104=##aff 105=##able 106=aff 107=! 108=a

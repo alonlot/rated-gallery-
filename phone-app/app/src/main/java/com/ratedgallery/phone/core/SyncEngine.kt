@@ -177,6 +177,25 @@ class SyncEngine(
         val attempted = HashSet<String>()
         val failed = LinkedHashSet<String>()
         var uploaded = 0
+        var lastIndexAt = now()
+
+        /**
+         * A first sync can upload for an hour or more, and the index used to come only at the end. Meanwhile
+         * the gallery showed old scores (for example from before the first model). Refresh it now and then.
+         * A failure here does not stop the uploads; the index comes again at the end of the sync.
+         */
+        suspend fun maybeRefreshIndex() {
+            if (now() - lastIndexAt < INDEX_REFRESH_MS) return
+            lastIndexAt = now()
+            try {
+                index.save { out -> api.downloadIndex(out) }
+                listener.onIndexSaved()
+            } catch (e: UnauthorizedException) {
+                throw e
+            } catch (e: IOException) {
+                // try again at the next refresh or at the end
+            }
+        }
 
         suspend fun sendManifest() {
             listener.onProgress(SyncStatus.Phase.MANIFEST, 0, 0, "Listing photos")
@@ -230,6 +249,7 @@ class SyncEngine(
                     val done = uploaded + failed.size - startDone
                     total = maxOf(total, done)
                     listener.onProgress(SyncStatus.Phase.UPLOAD, done, total, "Uploading")
+                    maybeRefreshIndex()
                 }
             }
             return any
@@ -247,5 +267,7 @@ class SyncEngine(
         const val BATCH = 20
         const val POLL_MS = 5_000L
         const val MAX_WAIT_MS = 10 * 60_000L
+        /** During long uploads, download the index this often so the gallery shows current scores. */
+        const val INDEX_REFRESH_MS = 3 * 60_000L
     }
 }

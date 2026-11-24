@@ -1,13 +1,18 @@
 """ONNX models on DirectML (CPU fallback per model), plus MediaPipe on CPU.
 
-Each model is tried on DirectML first with a warm-up run. If that fails, the model runs on CPU.
-The device of each model is logged and shown in the UI.
+Each model is checked on DirectML first, in a child process (dml_probe.py), with the fixed shapes the app uses.
+If that fails, the model runs on CPU. The device of each model is logged and shown in the UI.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -43,38 +48,118 @@ def missing_models():
     return [n for n, f in FILES.items() if not (config.MODELS / f).exists()]
 
 
-def _session(name, warm):
+def _providers():
     import onnxruntime as ort
 
+    return ort.get_available_providers()
+
+
+PROBE_FILE = "dml_probe.json"
+_probe_lock = threading.Lock()
+
+
+def _probe_key(name, feeds, dims) -> str:
+    import onnxruntime as ort
+
+    st = model_path(name).stat()
+    return json.dumps([FILES[name], st.st_size, st.st_mtime_ns, ort.__version__, feeds, dims], sort_keys=True)
+
+
+def _run_probe(name, feeds, dims) -> dict:
+    """Run dml_probe.py in a child process. A crash there cannot break DirectML in this process."""
+    spec = json.dumps({"path": str(model_path(name)), "feeds": feeds, "dims": dims})
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        p = subprocess.run([sys.executable, "-I", str(Path(__file__).with_name("dml_probe.py")), spec],
+                           capture_output=True, text=True, timeout=300, creationflags=flags)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "DirectML check did not finish in 300 s"}
+    for line in p.stdout.splitlines():
+        if line.startswith("DML_PROBE "):
+            return json.loads(line[len("DML_PROBE "):])
+    return {"ok": False, "error": f"DirectML check crashed (exit code {p.returncode:#x})"}
+
+
+def dml_probe(name, feeds, dims) -> dict:
+    """Does this model work on DirectML with these fixed shapes? Checked once in a child process, then cached
+    in data/models/dml_probe.json (new check after a new model file or ONNX Runtime version)."""
+    path = config.MODELS / PROBE_FILE
+    key = _probe_key(name, feeds, dims)
+    with _probe_lock:
+        try:
+            cache = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+        if key in cache:
+            return cache[key]
+        t = time.perf_counter()
+        res = _run_probe(name, feeds, dims)
+        log.info("DirectML check of %s %s: %s (%.1f s)", name, feeds, "ok" if res.get("ok") else res.get("error"),
+                 time.perf_counter() - t)
+        cache[key] = res
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cache, indent=1), "utf-8")
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("Could not save the DirectML check results: %s", e)
+        return res
+
+
+def _session(name, feeds: dict, dims: dict | None = None, tag=None):
+    """ONNX Runtime session for one model. feeds: input name -> fixed shape (warm-up and DirectML check).
+    dims: values for the free (named) dimensions of the model. DirectML gets these fixed shapes; some models
+    (ArcFace) only work on DirectML with them. tag: one DirectML session per tag (for example per batch size);
+    on the CPU all tags share one session."""
+    import onnxruntime as ort
+
+    dims = dims or {}
+    feeds = {k: list(v) for k, v in feeds.items()}
+    key = (name, tag)
     with _lock:
-        if name in _sessions:
-            return _sessions[name]
+        if key in _sessions:
+            return _sessions[key]
         path = str(model_path(name))
-        avail = ort.get_available_providers()
+        avail = _providers()
+
+        def warm(s):
+            s.run(None, {k: np.zeros(v, np.float32) for k, v in feeds.items()})
+
         sess, err = None, None
         if "DmlExecutionProvider" in avail and not config.settings().get("force_cpu"):
-            try:
-                so = ort.SessionOptions()
-                so.log_severity_level = 3
-                so.enable_mem_pattern = False
-                so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-                so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                s = ort.InferenceSession(path, so, providers=["DmlExecutionProvider", "CPUExecutionProvider"])
-                warm(s)
-                sess, dev = s, "DirectML"
-            except Exception as e:  # noqa: BLE001
-                err = f"{type(e).__name__}: {e}"[:300]
+            res = dml_probe(name, feeds, dims)
+            if res.get("ok"):
+                try:
+                    so = ort.SessionOptions()
+                    so.log_severity_level = 3
+                    so.enable_mem_pattern = False
+                    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    for k, v in dims.items():
+                        so.add_free_dimension_override_by_name(k, int(v))
+                    s = ort.InferenceSession(path, so, providers=["DmlExecutionProvider", "CPUExecutionProvider"])
+                    warm(s)
+                    sess, dev = s, "DirectML"
+                except Exception as e:  # noqa: BLE001
+                    err = f"{type(e).__name__}: {e}"[:300]
+            else:
+                err = res.get("error") or "DirectML check failed"
+            if sess is None:
                 log.warning("%s: DirectML failed, using CPU (%s)", name, err)
         if sess is None:
-            so = ort.SessionOptions()
-            so.log_severity_level = 3
-            so.intra_op_num_threads = max(1, min(4, (config.settings()["workers"] or 4)))
-            sess = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
-            warm(sess)
+            sess = _sessions.get((name, "cpu"))
+            if sess is None:
+                so = ort.SessionOptions()
+                so.log_severity_level = 3
+                so.intra_op_num_threads = max(1, min(4, (config.settings()["workers"] or 4)))
+                sess = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+                warm(sess)
+                _sessions[(name, "cpu")] = sess
             dev = "CPU"
-        DEVICES[name] = {"device": dev, "error": err, "providers": avail}
-        log.info("Model %s runs on %s", name, dev)
-        _sessions[name] = sess
+        if DEVICES.get(name, {}).get("device") != "CPU":  # a model counts as CPU if any of its sessions is
+            DEVICES[name] = {"device": dev, "error": err, "providers": avail}
+        log.info("Model %s%s runs on %s", name, f" ({tag})" if tag is not None else "", dev)
+        _sessions[key] = sess
         return sess
 
 
@@ -91,8 +176,8 @@ class SCRFD:
 
     def __init__(self, size=640):
         self.size = size
-        self.sess = _session("scrfd", lambda s: s.run(None, {s.get_inputs()[0].name: np.zeros((1, 3, size, size), np.float32)}))
-        self.inp = self.sess.get_inputs()[0].name
+        self.inp = "input.1"
+        self.sess = _session("scrfd", {self.inp: (1, 3, size, size)})
         self._centers = {}
 
     def _anchors(self, stride):
@@ -105,7 +190,8 @@ class SCRFD:
 
     def detect(self, img640: np.ndarray, thresh=0.5, nms=0.4):
         """img640: RGB uint8 (size x size). Returns boxes (n,4), scores (n,), kps (n,5,2) in pixels."""
-        blob = ((img640.astype(np.float32) - 127.5) / 128.0).transpose(2, 0, 1)[None]
+        # (x - 127.5) / 128 as a contiguous NCHW array: a non-contiguous input costs about 4 ms more per run
+        blob = cv2.dnn.blobFromImage(img640, 1 / 128.0, (img640.shape[1], img640.shape[0]), (127.5, 127.5, 127.5), swapRB=False)
         outs = self.sess.run(None, {self.inp: blob})
         boxes, scores, kpss = [], [], []
         for i, st in enumerate(self.STRIDES):
@@ -174,24 +260,34 @@ def align_face(img: np.ndarray, kps: np.ndarray, size=112) -> np.ndarray:
 
 
 class ArcFace:
-    BATCHES = (1, 8, 32)
+    # DirectML, RX 6600 XT: batch 1 3.7 ms, 2 5.9 ms, 4 7.0 ms, 8 12.7 ms, 32 40 ms. Most photos have 1 to 3 faces,
+    # so small batches matter; 32 is not faster per face than 4 x 8.
+    BATCHES = (1, 2, 4, 8)
 
     def __init__(self):
-        self.sess = _session("arcface", lambda s: s.run(None, {s.get_inputs()[0].name: np.zeros((8, 3, 112, 112), np.float32)}))
-        self.inp = self.sess.get_inputs()[0].name
+        self.inp = "input.1"
+        self._sess = {}
+        self.session(8)
+
+    def session(self, bs):
+        """One session per batch size. The model's batch dimension ("None") must be fixed for DirectML:
+        with a free batch size its last BatchNormalization fails on DirectML for batches > 1."""
+        if bs not in self._sess:
+            self._sess[bs] = _session("arcface", {self.inp: (bs, 3, 112, 112)}, {"None": bs}, tag=bs)
+        return self._sess[bs]
 
     def embed(self, crops: list[np.ndarray]):
         """crops: aligned RGB 112x112 uint8. Returns (normalized embeddings (n,512), norms (n,))."""
         if not crops:
             return np.zeros((0, 512), np.float32), np.zeros(0, np.float32)
         out = []
-        for i in range(0, len(crops), 32):
-            chunk = crops[i:i + 32]
+        for i in range(0, len(crops), 8):
+            chunk = crops[i:i + 8]
             n = len(chunk)
             bs = next(b for b in self.BATCHES if b >= n)  # fixed batch sizes help DirectML
             x = np.zeros((bs, 3, 112, 112), np.float32)
             x[:n] = ((np.stack(chunk).astype(np.float32) - 127.5) / 127.5).transpose(0, 3, 1, 2)
-            out.append(self.sess.run(None, {self.inp: x})[0][:n])
+            out.append(self.session(bs).run(None, {self.inp: x})[0][:n])
         e = np.concatenate(out).astype(np.float32)
         norms = np.linalg.norm(e, axis=1)
         return e / np.maximum(norms[:, None], 1e-9), norms
@@ -201,11 +297,12 @@ class ArcFace:
 
 CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], np.float32)
 CLIP_STD = np.array([0.26862954, 0.26130258, 0.27577711], np.float32)
+CLIP_DIMS = {"batch_size": 8, "num_channels": 3, "height": 224, "width": 224}  # the app always runs batches of 8
 
 
 class CLIP:
     def __init__(self):
-        self.sess = _session("clip", lambda s: s.run(None, {"pixel_values": np.zeros((8, 3, 224, 224), np.float32)}))
+        self.sess = _session("clip", {"pixel_values": (8, 3, 224, 224)}, CLIP_DIMS)
 
     def embed(self, imgs224: list[np.ndarray]):
         out = []
@@ -240,7 +337,7 @@ class IQA:
     SIZE = 384
 
     def __init__(self):
-        self.sess = _session("iqa", lambda s: s.run(None, {"image": np.zeros((1, 3, 384, 384), np.float32)}))
+        self.sess = _session("iqa", {"image": (1, 3, 384, 384)})
 
     def score(self, imgs384: list[np.ndarray]):
         out = []
@@ -264,7 +361,7 @@ class Beauty:
     """
 
     def __init__(self):
-        self.sess = _session("beauty", lambda s: s.run(None, {"image": np.zeros((4, 3, 224, 224), np.float32)}))
+        self.sess = _session("beauty", {"image": (4, 3, 224, 224)}, {"batch": 4})
 
     @staticmethod
     def views(crop256: np.ndarray):

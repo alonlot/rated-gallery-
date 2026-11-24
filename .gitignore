@@ -6,7 +6,7 @@ __pycache__/
 .pytest_cache/
 
 # Local data: database, caches, downloaded models. Never commit.
-data/
+/data/
 test_data/generated/
 
 # Android build output and signing keys
@@ -15,3 +15,6 @@ phone-app/.gradle/
 phone-app/local.properties
 *.jks
 *.keystore
+phone-app/keystore/
+phone-app/dist/
+*.apk

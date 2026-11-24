@@ -144,7 +144,9 @@ def search_text_files(models: Path, tmpdir: Path):
         inv[i] = tok
     if any(t is None or "\n" in t for t in inv):
         sys.exit("Unexpected tokenizer vocabulary")
-    (models / "mclip_vocab.txt").write_text("\n".join(inv) + "\n", encoding="utf-8")
+    # newline="\n": on Windows, text mode would write "\r\n" (the phone app reads this file too)
+    with open(models / "mclip_vocab.txt", "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(inv) + "\n")
     raw = (d / "dense.safetensors").read_bytes()
     n = struct.unpack("<Q", raw[:8])[0]
     info = json.loads(raw[8:8 + n])["linear.weight"]
